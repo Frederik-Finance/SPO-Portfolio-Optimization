@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DRL Agent Overview</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            background-color: #f4f4f4;
+        }
+        h1, h2, h3 {
+            color: #333;
+            margin-top: 20px;
+        }
+        p {
+            margin-bottom: 10px;
+        }
+        pre {
+            background-color: #eee;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        code {
+            font-family: monospace;
+        }
+        section {
+            margin-bottom: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .container {
+            width: 80%;
+            margin: auto;
+            background-color: #fff;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Comprehensive DRL Framework Overview</h1>
+        </header>
+        <main>
+            <section id="intro">
+                <h2>1. Introduction and Framework Overview</h2>
+                <p><em>Placeholder for a general introduction to the DRL framework, its goals, and a roadmap of the document.</em></p>
+            </section>
+
+            <section id="data-pipeline">
+                <h2>2. Data Pipeline and Feature Engineering</h2>
+                <p>The data pipeline, primarily managed by the <code>data_loader.py</code> script, is a foundational component of the DRL framework. It is responsible for sourcing, cleaning, aligning, and transforming a wide array of financial and economic data into a structured format suitable for training the reinforcement learning agent. The quality and richness of the features generated here directly impact the agent's ability to learn effective investment strategies.</p>
+                <h3>2.1. Data Sources</h3>
+                <p>The framework integrates data from several primary sources to build a comprehensive market view:</p>
+                <ul>
+                    <li><strong>ETF Price/Volume Data:</strong> Sourced using the <code>yfinance</code> library for a predefined list of <code>ETF_SYMBOLS</code>. This typically includes daily Open, High, Low, Close (OHLC) prices and trading Volume. Adjusted closing prices are often used to account for dividends and stock splits.</li>
+                    <li><strong>ETF Fundamentals (<code>ETF_Summary.xlsx</code>):</strong> This Excel file contains multiple sheets, each dedicated to specific fundamental indicators for the ETFs. Examples include:
+                        <ul>
+                            <li><code>MARKET_CAP</code>: The total market value of the ETF's outstanding shares.</li>
+                            <li><code>PUT_CALL</code>: The put-call ratio, indicating investor sentiment.</li>
+                            <li><code>SHORT_INT</code>: Short interest, representing the number of shares sold short.</li>
+                            <li><code>1M_50D</code>: Often used for Implied Volatility (IV) metrics, like the 1-month IV at a 50 delta.</li>
+                            <li>Other sheets might include dividend yields, expense ratios, etc.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Macroeconomic Data (<code>US_Economic_Data.xlsx</code>):</strong> This file provides key U.S. economic indicators. It typically has two main sheets:
+                        <ul>
+                            <li><code>Actual</code>: Contains the actual values of economic indicators (e.g., GDP growth rate, inflation figures). Key indicators used might include <code>GDPC1</code> (Real GDP), <code>PCEPI</code> (Personal Consumption Expenditures Price Index), <code>INDPRO</code> (Industrial Production), <code>CPIAUCSL</code> (Consumer Price Index), <code>PAYEMS</code> (Nonfarm Payrolls), <code>UMCSENT</code> (University of Michigan Consumer Sentiment), <code>UNRATE</code> (Unemployment Rate), <code>HOUST</code> (Housing Starts), <code>PERMIT</code> (Building Permits), <code>TOTALSA</code> (Total Vehicle Sales), <code>NAPM</code> (ISM Manufacturing Index), <code>PPIACO</code> (Producer Price Index - All Commodities), <code>PCECTPI</code> (Personal Consumption Expenditures Core Price Index), <code>DSPIC96</code> (Real Disposable Personal Income).</li>
+                            <li><code>ReleaseDate</code>: Contains the corresponding dates when each economic data point was officially released to the public. This is crucial for avoiding lookahead bias.</li>
+                        </ul>
+                    </li>
+                    <li><strong>US Treasury Rates (<code>US Rates.xlsx</code>):</strong> This file provides data on various U.S. Treasury yields, which are fundamental for understanding interest rate environments and risk-free benchmarks. Key rates often include <code>DGS10</code> (10-Year Treasury Constant Maturity Rate), <code>DGS2</code> (2-Year), <code>DGS1</code> (1-Year), and <code>DGS3MO</code> (3-Month).</li>
+                </ul>
+                <h3>2.2. External Feature Processing</h3>
+                <p>Raw data from external sources requires careful processing to be useful and to prevent biases:</p>
+                <ul>
+                    <li><strong>Economic Data - Release Date Alignment:</strong> This is a critical step to prevent lookahead bias. The values from the <code>Actual</code> sheet of <code>US_Economic_Data.xlsx</code> are mapped to their respective release dates from the <code>ReleaseDate</code> sheet. The <code>convert_float_columns_to_datetime_user_provided</code> function likely handles date parsing from Excel's float format. The process involves creating an <code>adjusted_actual_release</code> DataFrame where each economic data point is associated with the date it became publicly known, not the period it refers to. This adjusted data is then typically forward-filled to ensure the agent always has the latest known value.</li>
+                    <li><strong>ETF Fundamentals & Rates:</strong> Data from <code>ETF_Summary.xlsx</code> and <code>US Rates.xlsx</code> are loaded and typically re-indexed to match the trading dates of the primary ETF price data. Missing values are often handled using forward-fill (<code>ffill</code>) to carry the last known value forward, and sometimes backward-fill (<code>bfill</code>) for any initial NaNs, ensuring temporal consistency.</li>
+                </ul>
+                <h3>2.3. Feature Engineering</h3>
+                <p>Beyond raw data, several features are engineered to capture more complex market dynamics and signals:</p>
+                <ul>
+                    <li><strong>Momentum Features:</strong> Calculated for various lookback periods defined in a list like <code>ALL_PERIODS</code> (e.g., 1-month, 3-month, 6-month, 12-month returns). The formula is typically: <code>chosen_etf_prices_df / chosen_etf_prices_df.shift(N_val) - 1</code>, where <code>N_val</code> is the lookback period in days.</li>
+                    <li><strong>Forward Returns (<code>M1_fwd_rtn</code>):</strong> This is a crucial target variable. It's calculated as the return of an ETF one month into the future: <code>chosen_etf_prices_df.shift(-PERIOD_1M) / chosen_etf_prices_df - 1</code> (where <code>PERIOD_1M</code> is approximately 21 trading days). This <code>M1_fwd_rtn</code> serves as the "true future returns" (<code>c</code>) that the SPO+ loss function uses to evaluate the quality of the agent's predictions.</li>
+                    <li><strong>Economic Feature Transformations:</strong> To capture trends and changes, differences of economic indicators are often calculated over various periods (e.g., 3-month change: <code>adjusted_actual_release[econ_cols_present].diff(periods=PERIOD_3M)</code>). Percentage changes or other normalizations might also be applied.</li>
+                    <li><strong>Rates Feature Transformations:</strong>
+                        <ul>
+                            <li>Spreads: Differences between various Treasury yields (e.g., <code>Y10_Y2_Spread = DGS10 - DGS2</code>) are common indicators of economic outlook or yield curve shape.</li>
+                            <li>Differences/Changes: Similar to economic features, changes in rates over time (e.g., <code>diff(periods=PERIOD_1M)</code>).</li>
+                            <li>Standard Deviations: Rolling standard deviations of rates can indicate volatility in the interest rate market.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <h3>2.4. ETF Universe Selection</h3>
+                <p>To manage complexity and focus on relevant assets, a dynamic ETF universe selection mechanism might be employed:</p>
+                <ul>
+                    <li>The <code>get_etf_universe_affinity_propagation</code> function implements this selection.</li>
+                    <li><strong>Purpose:</strong> To dynamically select a diverse yet manageable subset of ETFs from a larger initial list (<code>ETF_SYMBOLS</code>) for the agent to trade. This helps in reducing the dimensionality of the action space and focusing on ETFs with potentially distinct characteristics.</li>
+                    <li><strong>Method:</strong>
+                        It typically uses historical return data to compute features for clustering, such as mean daily returns, standard deviation of returns, and pairwise correlations between ETFs over a specified period.
+                        Affinity Propagation, a clustering algorithm, is then applied to these features. Affinity Propagation does not require specifying the number of clusters beforehand.
+                        The ETFs corresponding to the cluster centers identified by the algorithm are chosen as the dynamic universe for a given period.
+                        Key parameters include <code>ap_preference</code> (influences the number of clusters found) and <code>ap_damping</code> (for convergence). A <code>random_state</code> ensures reproducibility.
+                    </li>
+                </ul>
+                <h3>2.5. Final <code>combined_features</code> DataFrame</h3>
+                <p>All the processed and engineered features are consolidated into a single, comprehensive DataFrame, usually named <code>combined_features</code>:</p>
+                <ul>
+                    <li><strong>Stacking and Concatenation:</strong> Price-derived features (momentum, forward returns), ETF-specific fundamentals, and volume are often first processed per ETF. These DataFrames (indexed by Date, with columns for features) are then stacked to create a MultiIndex of <code>(Date, Ticker)</code>. These stacked DataFrames are then concatenated along columns.</li>
+                    <li><strong>Merging Economic and Rates Data:</strong> The date-indexed processed economic data (<code>adjusted_actual_release</code>) and processed US Treasury rates data are merged with the stacked ETF features. Since economic and rates data are date-specific (not ticker-specific), they are broadcast or merged onto each ticker for a given date.</li>
+                    <li><strong>Final Cleaning:</strong>
+                        Common final steps include forward-filling (<code>ffill()</code>) any remaining NaNs to ensure the agent has continuous data, followed by backward-filling (<code>bfill()</code>) for any NaNs at the very beginning of the dataset.
+                        Crucially, any rows where the target variable <code>M1_fwd_rtn</code> is NaN are typically dropped, as these cannot be used for training (the agent needs the true future return for loss calculation). This often means the last month of data is not usable for training.
+                    </li>
+                    <li><strong>Role:</strong> This <code>combined_features</code> DataFrame is the primary output of <code>data_loader.py</code>. It serves as the foundational dataset from which the <code>PortfolioEnv</code> constructs the observation/state vector for the DRL agent at each time step.</li>
+                </ul>
+                <h3>2.6. Key Parameters in <code>data_loader.py</code></h3>
+                <p>The behavior of <code>data_loader.py</code> is governed by several key parameters, often defined as global constants or configuration settings:</p>
+                <ul>
+                    <li><code>ETF_SYMBOLS</code>: The initial, broad list of ETF tickers from which yfinance data is fetched and the dynamic universe is potentially selected.</li>
+                    <li><code>ALL_PERIODS</code>: A list of integer values defining the lookback windows (in trading days) for calculating momentum and other rolling features (e.g., <code>[21, 63, 126, 252]</code> for 1M, 3M, 6M, 1Y).</li>
+                    <li><code>start_date_yfinance</code>, <code>end_date_yfinance</code>: Define the overall period for which price data is downloaded.</li>
+                    <li><code>adjusted_start_date</code>: An earlier date used internally, from which data is loaded before being trimmed to <code>start_date_yfinance</code>. This can help ensure data quality and sufficient history for initial calculations (e.g., long-term momentum).</li>
+                    <li>Affinity Propagation parameters:
+                        <ul>
+                            <li><code>ap_preference</code>, <code>ap_damping</code>: Control the clustering behavior.</li>
+                            <li><code>random_state</code>: For reproducibility of clustering.</li>
+                            <li>Date range for AP: Specifies the period of historical data used by Affinity Propagation.</li>
+                        </ul>
+                    </li>
+                    <li><code>fallback_chosen_tickers</code>: A default list of tickers to use if the Affinity Propagation selection fails or is not enabled.</li>
+                    <li>Excel file paths and sheet names (e.g., <code>etf_summary_path</code>, <code>us_econ_data_path</code>, <code>us_rates_path</code>, and specific sheet names within them) are critical configurations for locating the raw data.</li>
+                </ul>
+            </section>
+
+            <section id="environment-design">
+                <h2>3. Environment Design (<code>PortfolioEnv</code>)</h2>
+                <p>The <code>PortfolioEnv</code> class, typically found in <code>drl_environment.py</code>, serves as the simulation testbed for the DRL agent. It implements the OpenAI Gym interface (now Gymnasium) and provides a realistic environment where the agent can make investment decisions (allocate portfolio weights) and observe the consequences (rewards and next states). This environment is crucial for both training the agent to learn optimal strategies and for evaluating its performance under various market conditions.</p>
+                <h3>3.1. Observation Space</h3>
+                <p>The observation space defines what information the agent receives at each step to make decisions. It's constructed from the processed data provided by <code>data_loader.py</code>:</p>
+                <ul>
+                    <li><strong>Input Data:</strong> The environment is initialized with <code>processed_data</code>, a dictionary which usually contains <code>chosen_etf_prices</code> (a DataFrame of prices for selected ETFs, indexed by date) and <code>combined_features</code> (a DataFrame with a <code>(Date, Ticker)</code> MultiIndex, containing all engineered features for all ETFs and global market features).</li>
+                    <li><strong>Construction from <code>combined_features</code>:</strong>
+                        <ul>
+                            <li>The <code>combined_features</code> DataFrame is pivoted or unstacked. If it has a <code>(Date, Ticker)</code> MultiIndex, it's transformed so that each row represents a single unique date. Columns are created for each feature for each ticker (e.g., 'FeatureA' for 'TickerX' becomes a column 'FeatureA_TickerX'), plus any global features that are indexed only by date.</li>
+                            <li>Column names resulting from unstacking a MultiIndex (e.g., <code>('FeatureA', 'TickerX')</code>) are flattened into single string names (e.g., <code>'FeatureA_TickerX'</code>) for easier access.</li>
+                            <li>The dates in the ETF price data and the feature data are aligned to ensure consistency.</li>
+                            <li><strong>NaN Handling:</strong> Any columns that are entirely NaN (<code>dropna(axis=1, how='all')</code>) are typically removed. Remaining NaNs are often forward-filled (<code>ffill()</code>) and then backward-filled (<code>bfill()</code>) to ensure a complete feature set at each time step.</li>
+                            <li>The final observation provided to the agent at each step is a 1D NumPy array representing the row of these combined, processed features for the current simulation date.</li>
+                        </ul>
+                    </li>
+                    <li>A parameter like <code>MIN_VALID_STEPS</code> might be used to ensure there's enough historical data available after processing to run a meaningful simulation. The environment typically pre-calculates all possible observation states from the input <code>combined_features</code> and stores them, for instance, in a NumPy array <code>self.processed_observation_data</code>.</li>
+                </ul>
+                <h3>3.2. Action Space</h3>
+                <p>The action space defines the set of possible actions the agent can take:</p>
+                <ul>
+                    <li>It is typically defined as a <code>gym.spaces.Box</code> (or <code>gymnasium.spaces.Box</code>): <code>spaces.Box(low=0, high=1, shape=(self.n_etfs,), dtype=np.float32)</code>.</li>
+                    <li><code>self.n_etfs</code> is the number of ETFs in the dynamically selected universe.</li>
+                    <li>This means the agent is expected to output an array of floating-point numbers, where each number is between 0 and 1 (inclusive), representing the target allocation (weight) for each ETF in the portfolio.</li>
+                    <li>The environment usually includes logic to handle actions that might not perfectly sum to 1 or adhere to the bounds:
+                        <ul>
+                            <li>Actions are clipped: <code>np.clip(action, 0, 1)</code>.</li>
+                            <li>If the sum of clipped actions exceeds 1, they are normalized: <code>action = action / np.sum(action)</code> to ensure they represent valid proportions.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <h3>3.3. <code>step</code> Function Deep Dive</h3>
+                <p>The <code>step(self, action)</code> method is the core of the environment's dynamics, executing the agent's chosen action and returning the outcome. Here's a breakdown of its typical logic:</p>
+                <ol>
+                    <li>
+                        <p><strong>Action Processing:</strong></p>
+                        <ul>
+                            <li>The input <code>action</code> (target ETF weights from the agent/MVO layer) is first clipped and normalized as described in the Action Space section to ensure validity.</li>
+                            <li>A <code>cash_weight</code> is calculated: <code>1.0 - np.sum(processed_action)</code>. This represents the portion of the portfolio held in cash.</li>
+                            <li>The processed action becomes the new target ETF weights: <code>target_etf_weights = processed_action</code>.</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>Transaction Costs Simulation:</strong></p>
+                        <ul>
+                            <li><code>trades</code> are calculated as the difference between the new <code>target_etf_weights</code> and the <code>self.current_weights</code> from the previous step, scaled by the portfolio value dedicated to ETFs.</li>
+                            <li><code>transaction_amount = np.sum(np.abs(trades_in_value))</code>: The total monetary value of assets bought or sold. (Note: some implementations might calculate trades based on target weights vs current weights, then apply to portfolio value). A more common way is: <code>trades_vector = target_etf_weights - self.current_etf_weights_before_rebalance</code>. The sum of absolute changes in weights multiplied by portfolio value gives the transaction volume.</li>
+                            <li><code>transaction_costs = total_transaction_volume * self.transaction_cost_pct</code>.</li>
+                            <li><code>portfolio_value_after_costs = self.current_portfolio_value - transaction_costs</code>. The portfolio value is reduced by transaction costs before market movements are applied.</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>Market Update and Portfolio Revaluation:</strong></p>
+                        <ul>
+                            <li>Fetch <code>current_prices</code> (prices at time `t`) and <code>next_prices</code> (prices at time `t+1`) for each ETF from the pre-loaded price data (e.g., <code>self.chosen_etf_prices_df</code>) based on the <code>self.current_step</code> which maps to a specific date.</li>
+                            <li>The new value of each ETF holding is calculated:
+                                <br><code>value_of_etf_i_at_t = target_etf_weights[i] * portfolio_value_after_costs</code>
+                                <br><code>number_of_shares_i = value_of_etf_i_at_t / current_prices[i]</code>
+                                <br><code>value_of_etf_i_at_t_plus_1 = number_of_shares_i * next_prices[i]</code>
+                            </li>
+                            <li><code>new_portfolio_value_after_market_move = np.sum(all_etf_values_at_t_plus_1) + (cash_weight * portfolio_value_after_costs)</code>. The cash component's value remains unchanged by market moves.</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>Reward Calculation:</strong></p>
+                        <ul>
+                            <li>The most common reward is the change in portfolio value: <code>reward = new_portfolio_value_after_market_move - self.current_portfolio_value</code>.</li>
+                            <li>Alternative reward structures might include Sharpe ratio, risk-adjusted returns, or penalties for excessive trading, but simple change in value is a common baseline.</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>State Update:</strong></p>
+                        <ul>
+                            <li><code>self.current_portfolio_value</code> is updated to <code>new_portfolio_value_after_market_move</code>.</li>
+                            <li><code>self.current_weights</code> (tracking actual weights of ETFs and cash) are updated based on the new values of holdings and the new total portfolio value.</li>
+                            <li><code>self.current_step</code> is incremented.</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>Done Condition:</strong></p>
+                        <ul>
+                            <li>The episode is marked as <code>done = True</code> if <code>self.current_step >= len(self.dates) - 1</code> (i.e., the simulation has reached the end of the available historical data).</li>
+                        </ul>
+                    </li>
+                    <li>
+                        <p><strong>Return Values:</strong></p>
+                        <ul>
+                            <li>The method returns a tuple: <code>(self._get_observation(), reward, done, info_dict)</code>.</li>
+                            <li><code>self._get_observation()</code> fetches the feature vector for the new <code>self.current_step</code>.</li>
+                            <li><code>info_dict</code> can contain auxiliary information like transaction costs, current portfolio value, etc., for logging or analysis.</li>
+                        </ul>
+                    </li>
+                </ol>
+                <h3>3.4. Key Environment Parameters</h3>
+                <p>Several parameters configure the behavior of the <code>PortfolioEnv</code>:</p>
+                <ul>
+                    <li><code>initial_investment</code>: The starting monetary value of the portfolio (e.g., $100,000).</li>
+                    <li><code>transaction_cost_pct</code>: The percentage cost applied to the monetary value of trades (e.g., 0.001 for 0.1% transaction cost).</li>
+                    <li><code>MIN_VALID_STEPS</code>: The minimum number of historical data points required to initialize and run the environment. This ensures that there's enough data for feature calculation and simulation steps.</li>
+                    <li>The <code>processed_data</code> dictionary (output from <code>data_loader.py</code> containing <code>chosen_etf_prices</code> and <code>combined_features</code>) is a crucial input parameter upon which the entire environment state and dynamics are built.</li>
+                </ul>
+            </section>
+
+            <section id="spo-mvo-layer">
+                <h2>4. The SPO-MVO Layer (<code>DifferentiableMVO</code>) - Mathematical Deep Dive</h2>
+                <p>The <code>DifferentiableMVO</code> class, located in <code>spo_layer.py</code>, is a cornerstone of the Predict-then-Optimize framework. It acts as the crucial bridge between the DRL agent's raw predictions (expected returns) and the actionable portfolio weights. Its key characteristic is its differentiability, which allows gradients from a downstream task-based loss (like SPO+ Loss) to flow back through the optimization problem itself, enabling the agent to learn predictions that are "optimization-aware."</p>
+                <h3>4.1. Mean-Variance Optimization Problem</h3>
+                <p>This layer is designed to solve a Mean-Variance Optimization (MVO) problem. The primary goal of MVO is to find a portfolio allocation that offers the best possible risk-adjusted return.</p>
+                <ul>
+                    <li><strong>Objective:</strong> Typically, MVO aims to maximize the Sharpe Ratio of the portfolio. Assuming the risk-free rate `r_f = 0` for simplicity (as often implied in such models if not explicitly stated), the Sharpe Ratio is `(w^T &mu;) / sqrt(w^T &Sigma; w)`.</li>
+                    <li><strong>Mathematical Formulation (Max Sharpe as QP):</strong> Maximizing the Sharpe Ratio directly is a non-convex problem. However, it can be transformed into an equivalent Quadratic Programming (QP) problem. The formulation often used in <code>DifferentiableMVO</code> (or similar contexts) is:
+                        <p style="text-align:center;">
+                            Minimize: <code>0.5 * y^T &Sigma; y</code> <br>
+                            Subject to: <br>
+                            1. <code>&mu;^T y = 1</code> <br>
+                            2. <code>y &ge; 0</code> (for each element in y) <br>
+                            3. If <code>max_weight_per_asset < 1.0</code>: <code>y_i &le; max_weight_per_asset * sum(y)</code> for each asset <code>i</code>.
+                        </p>
+                        Where:
+                        <ul>
+                            <li><code>y</code>: These are intermediate decision variables. They are proportional to the actual portfolio weights.</li>
+                            <li><code>&mu;</code> (mu): A vector representing the expected returns for each asset. In this framework, <code>&mu;</code> is the <code>predicted_returns</code> output by the DRL agent's actor network.</li>
+                            <li><code>&Sigma;</code> (Sigma): The covariance matrix of asset returns, representing their risks and inter-correlations. This is provided to the layer, often pre-computed.</li>
+                            <li>The term <code>0.5 * y^T &Sigma; y</code> represents the portfolio variance (risk) scaled by 0.5.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Final Portfolio Weights (<code>w</code>):</strong> The actual portfolio weights <code>w</code> that sum to 1 are obtained by normalizing the solution <code>y</code>:
+                        <p style="text-align:center;"><code>w = y / sum(y)</code></p>
+                    </li>
+                    <li><strong>Constraints Explained:</strong>
+                        <ul>
+                            <li><code>&mu;^T y = 1</code>: This constraint, in conjunction with minimizing portfolio variance (<code>0.5 * y^T &Sigma; y</code>), is a standard technique to find the portfolio on the efficient frontier that maximizes the Sharpe ratio. It effectively scales the portfolio to a target level of expected return (normalized to 1 here) while minimizing risk.</li>
+                            <li><code>y &ge; 0</code>: This imposes a long-only constraint, meaning no short selling of assets is allowed. All portfolio weights must be non-negative.</li>
+                            <li><code>y_i &le; max_weight_per_asset * sum(y)</code>: This constraint, if <code>max_weight_per_asset</code> is less than 1.0, limits the maximum proportion that any single asset <code>i</code> can hold in the portfolio. It's expressed in terms of <code>y</code> but translates directly to <code>w_i</code> after normalization. This helps in ensuring diversification.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <h3>4.2. Role of <code>cvxpylayers</code> and Differentiability</h3>
+                <p>The differentiability of the MVO problem is achieved using the <code>cvxpylayers</code> library:</p>
+                <ul>
+                    <li><code>cvxpylayers</code> is a Python library that enables the differentiation of convex optimization problems specified using <code>CVXPY</code>. <code>CVXPY</code> is a domain-specific language for convex optimization.</li>
+                    <li>Within <code>DifferentiableMVO</code>, the MVO problem described above is formulated using <code>CVXPY</code> variables and parameters. For instance:
+                        <ul>
+                            <li><code>y_cvx = cp.Variable(n_assets)</code>: Defines the decision variables.</li>
+                            <li><code>mu_cvx_param = cp.Parameter(n_assets)</code>: Defines a parameter for the expected returns, which will be fed the agent's predictions.</li>
+                            <li><code>L_transpose_param = cp.Parameter((n_assets, n_assets))</code>: Defines a parameter for the (transpose of the) Cholesky factor of the covariance matrix. The objective <code>0.5 * y^T &Sigma; y</code> is rewritten as <code>0.5 * cp.sum_squares(L_transpose_param @ y_cvx)</code>.</li>
+                        </ul>
+                    </li>
+                    <li>The <code>CvxpyLayer</code> class from <code>cvxpylayers</code> takes this <code>CVXPY</code> problem (objective and constraints) and the defined parameters and variables, and compiles it into a differentiable PyTorch layer.</li>
+                    <li>This means that when this layer is used in a PyTorch model, gradients can be computed through the MVO solution with respect to the parameters that were fed into it (like <code>mu_cvx_param</code>). This is the linchpin for allowing the SPO+ loss (which depends on the MVO output) to inform the DRL agent's prediction network.</li>
+                </ul>
+                <h3>4.3. <code>DifferentiableMVO.forward</code> Method Walkthrough</h3>
+                <p>The <code>forward</code> method of <code>DifferentiableMVO</code> executes the optimization for given inputs:</p>
+                <ul>
+                    <li><strong>Inputs:</strong> <code>predicted_returns</code> (which becomes <code>&mu;</code>) and <code>covariance_matrix</code> (which is <code>&Sigma;</code>).</li>
+                    <li><strong>Batch Processing:</strong> The method is designed to handle inputs in batches (e.g., if the DRL agent processes multiple states/predictions simultaneously). It typically iterates through each item in the batch.</li>
+                    <li><strong>Covariance Matrix Handling & Cholesky Decomposition:</strong>
+                        <ul>
+                            <li>For each covariance matrix <code>Sigma_i</code> in the batch, its Cholesky decomposition is computed: <code>L_i = torch.linalg.cholesky(Sigma_i)</code>. The Cholesky factor <code>L</code> is such that <code>&Sigma; = L L^T</code>.</li>
+                            <li>The layer's <code>CVXPY</code> problem is formulated using <code>L_i_transpose = L_i.T</code>. The quadratic term <code>y^T &Sigma; y</code> is equivalent to <code>y^T L L^T y = ||L^T y||_2^2</code>, which is often more numerically stable for solvers.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Solver Call:</strong> The core optimization step is invoking the compiled <code>cvxpylayer</code>:
+                        <br><code>y_solution_tuple = self.cvxpylayer(L_i_transpose, mu_i, solver_args={'solve_method': cp.ECOS})</code> (or another solver like OSQP).
+                        <br><code>y_solution_flat = y_solution_tuple[0]</code> extracts the solution for <code>y</code>.
+                    </li>
+                    <li><strong>Solver Fallbacks & Solution Handling:</strong>
+                        <ul>
+                            <li>The optimization might not always succeed or yield valid <code>y</code> values (e.g., if all input <code>mu_i</code> are non-positive, the constraint <code>&mu;^T y = 1</code> with <code>y &ge; 0</code> can become problematic, or numerical issues might arise).</li>
+                            <li>The code includes checks for such cases:
+                                <ul>
+                                    <li>If all <code>mu_i <= 1e-8</code> (effectively non-positive).</li>
+                                    <li>If <code>y_solution_flat</code> contains NaNs or Infs.</li>
+                                    <li>If <code>torch.sum(y_solution_flat) < 1e-8</code> (solution is near zero).</li>
+                                    <li>If any element of <code>y_solution_flat < -1e-4</code> (significant violation of non-negativity, despite constraint).</li>
+                                </ul>
+                            </li>
+                            <li>In these fallback scenarios, <code>y_solution_flat</code> is often set to a default, such as <code>torch.ones_like(mu_i)</code>. This would lead to an equal-weight portfolio after normalization, providing a robust, if not optimal, output.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Weight Normalization:</strong>
+                        <ul>
+                            <li><code>sum_y = torch.sum(y_solution_flat)</code>.</li>
+                            <li>The final portfolio weights <code>w</code> are obtained by normalizing <code>y</code>: <code>weights_w = y_solution_flat / sum_y</code>.</li>
+                            <li>A <code>torch.relu</code> might be applied to <code>y_solution_flat</code> before summing and normalizing (<code>y_relu = torch.relu(y_solution_flat)</code>) to strictly enforce non-negativity if solver tolerances sometimes allow small negative values.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Max Weight Constraint Enforcement:</strong>
+                        <ul>
+                            <li>The <code>CVXPY</code> problem definition includes the constraint <code>y_cvx[i] <= self.max_weight_per_asset * cp.sum(y_cvx)</code> which should enforce the max weight constraint directly within the optimization.</li>
+                            <li>A post-hoc <code>torch.clamp(weights_w, max=self.max_weight_per_asset)</code> might also be present. This could serve as an additional safeguard but ideally, the constraint within the optimization problem is the primary mechanism. If clamping changes the weights, they might need re-normalization to sum to 1.</li>
+                        </ul>
+                    </li>
+                </ul>
+            </section>
+
+            <section id="spo-loss-function">
+                <h2>5. SPO+ Loss Function (<code>SPOPlusLoss</code>) - Mathematical Deep Dive</h2>
+                <p>The <code>SPOPlusLoss</code> class, defined in <code>spo_loss.py</code>, implements the Smart Predict-then-Optimize (SPO+) loss function. This loss is specifically designed for "predict, then optimize" problems where the predictions from a machine learning model (here, the DRL agent's predicted returns) are used as inputs to a downstream optimization problem (the MVO portfolio construction). Its primary purpose is to train the prediction model to be "decision-aware," meaning it learns to make predictions that not only are statistically accurate but also lead to high-quality decisions when plugged into the optimization layer.</p>
+                <h3>5.1. Mathematical Formulation and Derivation</h3>
+                <p>The SPO+ loss aims to minimize the regret associated with making decisions based on predicted parameters versus true parameters.</p>
+                <ul>
+                    <li><strong>SPO+ Loss for Costs (General Form):</strong> The original SPO+ loss is often formulated for problems where we predict cost vectors. If <code>c</code> is the true cost vector and <code>&ĉ;</code> (c-hat) is the predicted cost vector, the SPO+ loss is:
+                        <br><code>L_SPO+(&ĉ;, c) = (c - 2&ĉ;)^T w_tilde + 2&ĉ;^T w*(c) - c^T w*(c)</code>
+                        <br>Where:
+                        <ul>
+                            <li><code>w*(c) = argmin_w c^T w</code> is the decision (e.g., portfolio weights) obtained by solving the optimization problem with the true cost vector <code>c</code>.</li>
+                            <li><code>w_tilde = argmin_w (c - 2&ĉ;)^T w</code> is the decision obtained by solving the optimization problem with a modified cost vector <code>(c - 2&ĉ;)</code>.</li>
+                        </ul>
+                        This formulation provides a convex surrogate to the actual decision regret: <code>c^T w*(&ĉ;) - c^T w*(c)</code>.
+                    </li>
+                    <li><strong>Adaptation for Returns (Portfolio Optimization):</strong> In portfolio optimization, we work with returns (where higher is better) rather than costs (lower is better).
+                        <ul>
+                            <li>Let <code>r_true</code> be the true future returns and <code>r_hat</code> (<code>&rcirc;</code>) be the agent's predicted future returns. We can relate this to the cost formulation by setting `c = -r_true` and `&ĉ; = -r_hat`.</li>
+                            <li>Substituting these into the cost-based SPO+ formula and rearranging signs (since we maximize returns, which is minimizing negative returns), we arrive at the formulation used in the <code>spo_loss.py</code> implementation:
+                                <br><code>spo_plus_loss_per_item = term1 + term2 + term3</code>
+                                <br>Where (using <code>r_hat</code> for <code>predicted_returns_c_hat</code> and <code>r_true</code> for <code>true_returns_c</code>):
+                                <ul>
+                                    <li><code>term1 ("max_term_val") = sum((-r_true + 2 * r_hat) * w_for_max_term, dim=1)</code>
+                                        <br>Here, <code>w_for_max_term</code> is the portfolio obtained by solving the MVO problem with <code>(-r_true + 2 * r_hat)</code> as the expected returns vector: <code>w_for_max_term = mvo_solver(-r_true + 2 * r_hat, covariance_matrix)</code>. This term corresponds to <code>(c - 2&ĉ;)^T w_tilde</code> where <code>c-2&ĉ;</code> becomes <code>-r_true + 2r_hat</code>.
+                                    </li>
+                                    <li><code>term2 ("term_2_r_hat_w_star_c") = -2 * sum(r_hat * w_star_c, dim=1)</code>
+                                        <br>This corresponds to <code>2&ĉ;^T w*(c)</code> which becomes <code>2(-r_hat)^T w*(-r_true) = -2 * r_hat^T w*(r_true)</code>.
+                                    </li>
+                                    <li><code>term3 ("term_r_true_w_star_c") = sum(r_true * w_star_c, dim=1)</code> (Note: the code has <code>-sum(true_returns_c * weights_true_params, dim=1)</code> which is <code>-r_true^T w*(r_true)</code>. This corresponds to <code>-c^T w*(c)</code> which is <code>-(-r_true)^T w*(-r_true) = r_true^T w*(-r_true)</code>. If <code>w_star_c</code> is <code>w*(r_true)</code>, then this term is <code>r_true^T w*(r_true)</code>. The provided code snippet for the method walkthrough had a negative sign for this term, which seems to align with the original cost formulation if `w_star_c` is `w*(-c)`. Let's assume <code>w_star_c</code> is <code>w*(r_true)</code> as solved by MVO which maximizes returns.)
+                                        <br>The specific formula used in the `SPOPlusLoss.forward` snippet was: `max_term_val + term_2_val + term_3_val`, where `term_3_val = torch.sum(true_returns_c * weights_true_params, dim=1)`. This is `r_true^T w*(r_true)`.
+                                    </li>
+                                </ul>
+                                The <code>w_star_c</code> (or <code>weights_true_params</code>) are the optimal weights if true returns <code>r_true</code> were known: <code>w_star_c = mvo_solver(r_true, covariance_matrix)</code>.
+                            </li>
+                        </ul>
+                    </li>
+                    <li><strong>Intuition:</strong> The SPO+ loss is designed to make the predicted returns <code>r_hat</code> lead to decisions (portfolio weights <code>w*(r_hat)</code>) that perform well with respect to the true returns <code>r_true</code>. It does this by constructing a surrogate loss function that is convex (under certain conditions on the optimization problem) and differentiable, facilitating gradient-based learning.</li>
+                </ul>
+                <h3>5.2. Regret Minimization Concept</h3>
+                <p>The core idea behind SPO+ Loss is to minimize "decision regret." Decision regret is the difference in outcome (e.g., portfolio return) between using the decision made with predicted information versus the decision that would have been made if perfect future information was available.</p>
+                <ul>
+                    <li>If <code>w*(r_hat)</code> are the weights from predicted returns and <code>w*(r_true)</code> are the weights from true (oracle) returns, the true regret (in terms of portfolio return) is: <code>PortfolioOutcome(w*(r_true), r_true) - PortfolioOutcome(w*(r_hat), r_true)</code>. We want to minimize this regret.</li>
+                    <li>The SPO+ loss provides a differentiable surrogate for this regret. By minimizing the SPO+ loss, the DRL agent is encouraged to produce predictions <code>r_hat</code> such that the portfolio <code>w*(r_hat)</code> behaves as closely as possible to the optimal portfolio <code>w*(r_true)</code> when evaluated on the actual realized returns <code>r_true</code>.</li>
+                </ul>
+                <h3>5.3. <code>SPOPlusLoss.forward</code> Method Walkthrough</h3>
+                <p>The <code>forward</code> method of the <code>SPOPlusLoss</code> class calculates the loss value based on the agent's predictions and the true outcomes.</p>
+                <ul>
+                    <li><strong>Inputs:</strong>
+                        <ul>
+                            <li><code>predicted_returns_c_hat</code>: The agent's predicted returns for each asset (denoted as <code>r_hat</code>).</li>
+                            <li><code>true_returns_c</code>: The actual future returns for each asset (denoted as <code>r_true</code>).</li>
+                            <li><code>covariance_matrix</code>: The covariance matrix of asset returns (<code>&Sigma;</code>).</li>
+                        </ul>
+                    </li>
+                    <li><strong>Step-by-step Calculation:</strong>
+                        <ol>
+                            <li><code>w_star_c_hat = self.mvo_solver(predicted_returns_c_hat, covariance_matrix)</code>: This calculates <code>w*(r_hat)</code>, the portfolio weights derived from the agent's current predicted returns <code>r_hat</code>. While calculated, this specific variable isn't directly used in the SPO+ formula terms shown in the prior conceptual snippet for `PPOAgent`, but the underlying principle relates to evaluating decisions based on <code>r_hat</code>. The SPO+ formula cleverly sidesteps direct use of <code>w*(r_hat)</code> for better gradient properties.</li>
+                            <li><code>with torch.no_grad(): w_star_c = self.mvo_solver(true_returns_c, covariance_matrix).detach()</code>: This calculates <code>w*(r_true)</code>, the hypothetical optimal portfolio weights if the true future returns <code>r_true</code> were known. <code>torch.no_grad()</code> and <code>.detach()</code> are used because these are considered target values derived from true data, and we don't want to backpropagate gradients through their calculation with respect to <code>true_returns_c</code>.</li>
+                            <li><code>effective_mu_for_max_term = -true_returns_c + 2 * predicted_returns_c_hat</code>: This forms the objective vector <code>(2r_hat - r_true)</code> for the first MVO solve step in the SPO+ formula.</li>
+                            <li><code>w_for_max_term = self.mvo_solver(effective_mu_for_max_term, covariance_matrix)</code>: Solves the MVO problem to find the weights <code>w_tilde</code> that maximize <code>(2r_hat - r_true)^T w</code>.</li>
+                            <li><code>max_term_val = torch.sum(effective_mu_for_max_term * w_for_max_term, dim=1)</code>: Calculates the first term of the SPO+ loss: <code>(2r_hat - r_true)^T w_tilde</code>.</li>
+                            <li><code>term_2_r_hat_w_star_c = -2 * torch.sum(predicted_returns_c_hat * w_star_c, dim=1)</code>: Calculates the second term: <code>-2 * r_hat^T w*(r_true)</code>.</li>
+                            <li><code>term_r_true_w_star_c = torch.sum(true_returns_c * w_star_c, dim=1)</code>: Calculates the third term: <code>r_true^T w*(r_true)</code>. (Assuming the conceptual snippet's version: <code>max_term_val + term_2_val + term_3_val</code>).</li>
+                            <li><code>spo_plus_loss_per_item = max_term_val + term_2_r_hat_w_star_c + term_r_true_w_star_c</code>: Sums the three components for each item in the batch.</li>
+                            <li><code>final_loss = spo_plus_loss_per_item.mean()</code>: The final loss is the average of the SPO+ loss values across the batch.</li>
+                        </ol>
+                    </li>
+                </ul>
+                <h3>5.4. Gradient Flow and "Decision-Aware" Learning</h3>
+                <p>The power of the SPO+ loss in conjunction with a differentiable optimization layer (<code>DifferentiableMVO</code>) lies in its ability to facilitate "decision-aware" learning:</p>
+                <ul>
+                    <li>Because <code>self.mvo_solver</code> (which is an instance of <code>DifferentiableMVO</code>) is differentiable, the gradients from the <code>final_loss</code> can flow backward through the MVO solution process.</li>
+                    <li>Specifically, gradients with respect to <code>predicted_returns_c_hat</code> (i.e., <code>r_hat</code>) are computed. These gradients originate from terms involving <code>r_hat</code>:
+                        <ul>
+                            <li>The <code>max_term_val</code>: depends on <code>r_hat</code> both directly in <code>effective_mu_for_max_term</code> and indirectly through <code>w_for_max_term</code> (since <code>w_for_max_term</code> is a function of <code>effective_mu_for_max_term</code> which contains <code>r_hat</code>).</li>
+                            <li>The <code>term_2_r_hat_w_star_c</code>: directly depends on <code>r_hat</code>.</li>
+                        </ul>
+                    </li>
+                    <li>These gradients are then used to update the DRL agent's policy network (the Actor component of <code>ActorCritic</code>), which is responsible for generating <code>predicted_returns_c_hat</code>.</li>
+                    <li>By minimizing the SPO+ loss, the agent learns to adjust its return predictions <code>r_hat</code> in such a way that, when these predictions are fed into the MVO solver, the resulting portfolio weights are closer to the true optimal weights, leading to better actual portfolio performance. It's not just about minimizing prediction error (e.g., Mean Squared Error) but about minimizing the error in the *decision quality* that results from those predictions.</li>
+                </ul>
+            </section>
+
+            <section id="core-drl-agent">
+                <h2>6. Core DRL Agent (<code>PPOAgent</code> and <code>ActorCritic</code>)</h2>
+                <p>The heart of the decision-making process is the Deep Reinforcement Learning (DRL) agent, implemented in <code>drl_agent.py</code>. This agent employs the Proximal Policy Optimization (PPO) algorithm, a state-of-the-art RL technique known for its stability and performance. It uses an Actor-Critic architecture, where two neural networks collaborate to learn the optimal investment policy.</p>
+                <h3>6.1. <code>ActorCritic</code> Network Architecture</h3>
+                <p>The <code>ActorCritic</code> class defines the neural network models for both the actor and the critic.</p>
+                <ul>
+                    <li><strong>Actor Network (<code>self.actor_mean</code>):</strong>
+                        <ul>
+                            <li><strong>Input:</strong> The current state observation from the environment, with dimension <code>state_dim</code>.</li>
+                            <li><strong>Layers:</strong> Typically, a multi-layer perceptron (MLP) consisting of a sequence of <code>torch.nn.Linear</code> layers. For example, the architecture might be <code>Linear(state_dim -> 128)</code> -> <code>Tanh</code> -> <code>Linear(128 -> 128)</code> -> <code>Tanh</code> -> <code>Linear(128 -> action_dim)</code>. The <code>action_dim</code> corresponds to the number of ETFs (<code>n_etfs</code>) for which the agent needs to predict returns.</li>
+                            <li><strong>Activation Functions:</strong> <code>torch.nn.Tanh</code> is commonly used as an activation function between hidden layers, providing non-linearity.</li>
+                            <li><strong>Output (<code>action_mean</code>):</strong> The actor network outputs the mean values (<code>action_mean</code>) for a multivariate normal distribution. These mean values are the agent's predicted expected returns (<code>&ĉ;</code>) for each ETF in the current portfolio universe.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Action Distribution:</strong>
+                        <ul>
+                            <li>To enable exploration, the agent samples actions (predicted returns) from a probability distribution during training.
+                            <li><code>self.action_log_std</code>: This is a learnable parameter (<code>torch.nn.Parameter</code>) representing the logarithm of the standard deviation for each action dimension. It's often initialized to a small value (e.g., corresponding to an initial <code>action_std_init</code>).</li>
+                            <li>The <code>action_mean</code> from the actor network and the exponentiated <code>self.action_log_std</code> (i.e., <code>action_std = torch.exp(self.action_log_std)</code>) are used to define a <code>torch.distributions.MultivariateNormal</code> distribution. This distribution typically has a diagonal covariance matrix, meaning the predicted returns for different ETFs are considered independent given the state (though their means are jointly determined by the network).</li>
+                            <li>During training (in the <code>act</code> method), the agent samples <code>action_pred_returns</code> from this distribution. For evaluation or exploitation, the agent might directly use the <code>action_mean</code>.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Critic Network (<code>self.critic</code>):</strong>
+                        <ul>
+                            <li><strong>Input:</strong> The current state observation (<code>state_dim</code>).</li>
+                            <li><strong>Layers:</strong> Similar to the actor, the critic is usually an MLP (e.g., <code>Linear(state_dim -> 128)</code> -> <code>Tanh</code> -> <code>Linear(128 -> 128)</code> -> <code>Tanh</code> -> <code>Linear(128 -> 1)</code>).</li>
+                            <li><strong>Output:</strong> A single scalar value representing the estimated value of the current state, <code>V(s)</code>. This value function estimates the expected cumulative future reward from being in state <code>s</code>.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Key Methods:</strong>
+                        <ul>
+                            <li><code>act(self, state)</code>: Used during experience collection. It takes a state, passes it through the actor to get <code>action_mean</code>, forms the distribution with <code>action_log_std</code>, samples an action (predicted returns <code>&ĉ;</code>), and computes its log probability. It also passes the state through the critic to get the state value <code>V(s)</code>.</li>
+                            <li><code>evaluate(self, state, action)</code>: Used during the PPO update phase. It takes a state and an action (the <code>&ĉ;</code> that was sampled by the old policy). It computes the log probability of that action under the current policy's distribution, the state value <code>V(s)</code> from the current critic, and the entropy of the current policy's action distribution.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <h3>6.2. PPO Algorithm Fundamentals</h3>
+                <p>PPO is a policy gradient method that balances exploration and exploitation while ensuring stable learning updates.</p>
+                <ul>
+                    <li><strong>Policy Gradient Method:</strong> PPO directly optimizes the agent's policy (the mapping from states to actions or action probabilities).</li>
+                    <li><strong>Actor-Critic Approach:</strong> It uses an actor network to learn the policy and a critic network to learn a value function that estimates the expected return from a state, which helps in reducing the variance of policy gradient estimates.</li>
+                    <li><strong>Clipped Surrogate Objective:</strong> PPO's hallmark is its clipped surrogate objective function. It discourages large policy updates that could lead to performance collapse. The objective involves a ratio <code>r_t(&theta;) = &pi;_&theta;(a_t|s_t) / &pi;_&theta;_old(a_t|s_t)</code>, where <code>&pi;_&theta;</code> is the current policy and <code>&pi;_&theta;_old</code> is the policy used to collect the data. The objective is typically:
+                        <br><code>L_CLIP(&theta;) = E_t [ min(r_t(&theta;)&Acirc;_t, clip(r_t(&theta;), 1-&epsilon;, 1+&epsilon;)&Acirc;_t) ]</code>
+                        <br>where <code>&Acirc;_t</code> is the advantage estimate and <code>&epsilon;</code> (epsilon) is a small hyperparameter (e.g., 0.2) defining the clipping range.
+                    </li>
+                    <li><strong>Advantage Estimation (<code>&Acirc;_t</code>):</strong> The advantage function <code>A(s,a) = Q(s,a) - V(s)</code> indicates how much better an action <code>a</code> is compared to the average action at state <code>s</code>. In practice, it's often estimated as <code>&Acirc;_t = G_t - V(s_t)</code>, where <code>G_t</code> is the discounted sum of future rewards (an estimate of <code>Q(s_t, a_t)</code>) starting from state <code>s_t</code>, and <code>V(s_t)</code> is the critic's estimate of the state value.</li>
+                    <li><strong>Value Function Estimation:</strong> The critic network is trained to minimize the squared error between its estimate <code>V(s_t)</code> and the calculated discounted returns <code>G_t</code>: <code>L_VF = (V(s_t) - G_t)^2</code>.</li>
+                    <li><strong>Multiple Epochs of Updates:</strong> PPO typically performs multiple epochs (<code>K_epochs</code>) of gradient ascent/descent on the collected batch of experiences to improve sample efficiency.</li>
+                </ul>
+                <h3>6.3. <code>PPOAgent.select_action</code> Method</h3>
+                <p>This method orchestrates how the agent chooses an action (portfolio weights) when interacting with the environment:</p>
+                <ol>
+                    <li><strong>Input:</strong> The current environment <code>state</code> and the <code>current_covariance_matrix</code> (<code>&Sigma;</code>) for the assets.</li>
+                    <li>The state is converted to a PyTorch tensor. Then, <code>self.policy_old.act(state_tensor)</code> is invoked. <code>self.policy_old</code> is a copy of the policy network from before the current update cycle begins; it's used for collecting a consistent batch of experiences. This call returns:
+                        <ul>
+                            <li><code>action_pred_returns_tensor</code>: These are the predicted mean returns (<code>&ĉ;</code>) sampled from the old policy's distribution.</li>
+                            <li><code>action_logprob</code>: The log probability of having sampled these <code>action_pred_returns_tensor</code> under the old policy.</li>
+                            <li><code>state_val</code>: The value of the current state as estimated by the old policy's critic (<code>V_old(s)</code>).</li>
+                        </ul>
+                    </li>
+                    <li>The <code>action_pred_returns_tensor</code> (the agent's predicted <code>&ĉ;</code>) are then passed to the differentiable MVO solver: <code>portfolio_weights_tensor = self.mvo_solver(action_pred_returns_tensor, cv_matrix_tensor)</code>. This step translates the predicted returns into actual portfolio weights <code>w*(&ĉ;)</code>.</li>
+                    <li>Key information from this step is stored in the agent's replay buffer (<code>self.buffer</code>). This includes the original <code>state_tensor</code>, the <code>action_pred_returns_tensor</code> (which PPO treats as the "action" taken by its policy network), its <code>action_logprob</code>, the <code>state_val</code>, and also the <code>true_forward_returns</code> (extracted from the state if available, or stored separately) which are needed for the SPO+ loss.</li>
+                    <li>Finally, the <code>portfolio_weights_tensor</code> (detached from the computation graph and converted to a NumPy array) is returned. These are the weights to be applied in the portfolio environment.</li>
+                </ol>
+                <h3>6.4. <code>PPOAgent.update</code> Method In-Depth</h3>
+                <p>This method is called after collecting a batch of experiences and performs the learning updates for the actor and critic networks.</p>
+                <ul>
+                    <li><strong>Experience Processing:</strong>
+                        <ul>
+                            <li>Data is retrieved from the buffer: <code>old_states</code>, <code>old_actions_pred_returns</code> (the <code>&ĉ;</code> values sampled by <code>policy_old</code>), <code>old_logprobs</code>, <code>old_state_values</code> (<code>V_old(s)</code>), and <code>old_true_forward_returns</code> (<code>c</code> or <code>r_true</code>).</li>
+                            <li>Discounted Returns (<code>Gt</code> or <code>rewards_to_go</code>): For each step in the collected trajectories, the cumulative discounted future rewards are calculated. This is typically done by iterating backward from the end of each episode: <code>G_t = r_t + &gamma; * G_{t+1}</code> (where <code>G_T = V(s_T)</code> if <code>s_T</code> is terminal, or 0).</li>
+                            <li>Advantages (<code>A_t</code>): Calculated as <code>advantages = G_t - old_state_values.detach()</code>. The advantages estimate how much better or worse the taken action (leading to <code>G_t</code>) was compared to the baseline state value. Advantages are often normalized (e.g., by subtracting the mean and dividing by the standard deviation) to stabilize training.</li>
+                        </ul>
+                    </li>
+                    <li><strong>SPO+ Loss Calculation:</strong>
+                        <ul>
+                            <li>The SPO+ loss is computed using the collected data: <code>actual_spo_plus_loss = self.spo_loss_fn(old_actions_pred_returns, old_true_forward_returns, cv_matrix_tensor_for_loss)</code>. This calculation, detailed in Section 5, uses the agent's predicted returns (<code>&ĉ;</code>) and the true future returns (<code>r_true</code>) along with the covariance matrix to quantify the decision regret.</li>
+                        </ul>
+                    </li>
+                    <li><strong>PPO Update Loop (<code>for _ in range(self.K_epochs):</code>):</strong> The agent iterates over the batch of data multiple times.
+                        <ul>
+                            <li><strong>Evaluate Current Policy:</strong> <code>logprobs, state_values_eval, dist_entropy = self.policy.evaluate(old_states, old_actions_pred_returns)</code>. Note that <code>old_actions_pred_returns</code> (the <code>&ĉ;</code> values sampled by <code>policy_old</code>) are passed here. The <code>evaluate</code> method calculates their log probabilities under the *current* (being updated) policy <code>self.policy</code>, gets the current critic's valuation <code>V_current(s)</code> (as <code>state_values_eval</code>), and the entropy of the current policy's action distribution.</li>
+                            <li><strong>Policy Ratio:</strong> <code>ratios = torch.exp(logprobs - old_logprobs.detach())</code>. This is <code>r_t(&theta;)</code>.</li>
+                            <li><strong>Policy Loss (Clipped Surrogate Objective):</strong> <code>policy_loss = -torch.min(ratios * advantages, torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages).mean()</code>. This is the core PPO policy objective. The negative sign is because optimizers typically minimize loss.</li>
+                            <li><strong>Value Loss:</strong> <code>value_loss = self.MseLoss(state_values_eval, G_t)</code>. The critic (<code>state_values_eval</code>) is trained to predict the calculated discounted returns (<code>G_t</code>). <code>0.5 *</code> is often a coefficient here.</li>
+                            <li><strong>Combined Loss:</strong> The total loss function is a weighted sum of the policy loss, value loss, SPO+ loss, and an entropy bonus (to encourage exploration):
+                                <br><code>loss = policy_loss + self.value_loss_coeff * value_loss + self.spo_plus_loss_coeff * actual_spo_plus_loss - self.entropy_coeff * dist_entropy.mean()</code>.
+                                <br>(Typical coefficients: <code>value_loss_coeff=0.5</code>, <code>entropy_coeff=0.01</code>).
+                            </li>
+                            <li><strong>Optimization Step:</strong>
+                                <ul>
+                                    <li><code>self.optimizer.zero_grad()</code>: Clears old gradients.</li>
+                                    <li><code>loss.backward()</code>: Computes gradients of the total loss with respect to the policy (actor and critic) parameters.</li>
+                                    <li><code>torch.nn.utils.clip_grad_norm_</code> may be applied here to prevent exploding gradients.</li>
+                                    <li><code>self.optimizer.step()</code>: Updates the policy parameters.</li>
+                                </ul>
+                            </li>
+                        </ul>
+                    </li>
+                    <li><strong>Update Old Policy:</strong> After all <code>K_epochs</code>, the weights of the policy being trained (<code>self.policy</code>) are copied to the old policy (<code>self.policy_old</code>): <code>self.policy_old.load_state_dict(self.policy.state_dict())</code>. This prepares <code>policy_old</code> for the next round of experience collection.</li>
+                    <li><strong>Clear Buffer:</strong> The replay buffer is cleared (<code>self.buffer.clear()</code>) as PPO is an on-policy algorithm.</li>
+                </ul>
+                <h3>6.5. Key Agent Parameters and Their Impact</h3>
+                <p>The behavior and performance of the PPO agent are significantly influenced by its hyperparameters:</p>
+                <ul>
+                    <li><code>lr_actor</code>, <code>lr_critic</code>: Learning rates for the actor and critic networks (or a single learning rate if using a shared optimizer). Typical values range from <code>1e-5</code> to <code>5e-4</code>. Too high can lead to instability; too low can result in slow convergence.</li>
+                    <li><code>gamma</code>: The discount factor for future rewards (e.g., 0.99). Values closer to 1 emphasize long-term rewards, while smaller values prioritize short-term gains.</li>
+                    <li><code>K_epochs</code>: The number of times the agent iterates over the collected batch of experiences during each update phase (e.g., 4 to 10). Higher values can improve sample efficiency but increase computation time per update.</li>
+                    <li><code>eps_clip</code>: The PPO clipping parameter (e.g., 0.1 or 0.2). It restricts the magnitude of policy changes, ensuring more stable updates.</li>
+                    <li><code>action_std_init</code>: The initial standard deviation for the action distribution (e.g., 0.5 to 1.0). This parameter controls the agent's initial exploration level. It can be fixed or annealed (decayed) over time.</li>
+                    <li><code>spo_plus_loss_coeff</code>: The coefficient that weights the SPO+ loss term in the combined loss function. A higher value gives more importance to making predictions that are good for the downstream MVO task, relative to the standard PPO policy and value objectives.</li>
+                    <li><code>value_loss_coeff</code>: Coefficient for the value loss term (typically 0.5).</li>
+                    <li><code>entropy_coeff</code>: Coefficient for the entropy bonus term (typically 0.01). Encourages exploration by penalizing overly deterministic policies.</li>
+                    <li><code>true_forward_return_feature_indices</code>: Specifies the indices within the state vector where the true future returns (needed for the SPO+ loss calculation as <code>r_true</code>) are located. This is a crucial link for the SPO+ loss.</li>
+                </ul>
+            </section>
+
+            <section id="training-process">
+                <h2>7. Training Process</h2>
+                <p>The training regimen for the DRL agent involves iterative interaction with the simulated market environment (<code>PortfolioEnv</code>) over numerous episodes. During this process, the agent learns to refine its policy—how it predicts returns and ultimately determines portfolio allocations—to maximize cumulative rewards. The main training loop, typically orchestrated in a script like <code>main.py</code> or a dedicated training script, coordinates this interaction and learning.</p>
+                <h3>7.1. Overall Training Loop</h3>
+                <p>The training process generally follows this structure:</p>
+                <ul>
+                    <li><strong>Initialization:</strong>
+                        <ul>
+                            <li>The <code>PortfolioEnv</code> is instantiated with processed historical data and environment parameters.</li>
+                            <li>The <code>PPOAgent</code> (including its <code>ActorCritic</code> networks and optimizer) is initialized with its hyperparameters.</li>
+                            <li>Logging mechanisms (e.g., for TensorBoard, CSV files) are set up to track metrics.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Outer Loop (Training Duration):</strong> This loop runs for a predefined total number of training timesteps (e.g., 1 million steps) or a set number of episodes.
+                        <ul>
+                            <li>Variables for tracking episode rewards, lengths, and losses are initialized.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Inner Loop (Per Episode):</strong>
+                        <ul>
+                            <li><code>state = env.reset()</code>: The environment is reset at the beginning of each episode, providing an initial state observation. The covariance matrix for the MVO solver might also be initialized or updated here based on the starting date of the episode.</li>
+                            <li>A loop then runs for a maximum number of steps within the episode (e.g., length of available data for that run) or until the environment signals <code>done</code>.
+                                <ol>
+                                    <li><code>current_covariance_matrix = ...</code> : The covariance matrix relevant for the current timestep is obtained (see Section 7.2).</li>
+                                    <li><code>portfolio_weights = agent.select_action(state, current_covariance_matrix)</code>: The agent selects portfolio weights. Internally, the policy predicts returns (<code>&ĉ;</code>), and the MVO layer converts these predictions into the final weights. The agent also stores the state, predicted returns (<code>&ĉ;</code>), and log probability of <code>&ĉ;</code> in its buffer.</li>
+                                    <li><code>next_state, reward, done, info = env.step(portfolio_weights)</code>: The chosen portfolio weights are applied to the environment, which simulates market transitions and returns the next state, the reward obtained, a flag indicating if the episode has terminated, and additional information.</li>
+                                    <li>The agent stores the received <code>reward</code> and <code>done</code> flag in its buffer, associating them with the previously stored state and action (<code>&ĉ;</code>). (<code>agent.buffer.rewards.append(reward)</code>, <code>agent.buffer.is_terminals.append(done)</code>).</li>
+                                    <li><code>state = next_state</code>: The state is updated for the next iteration.</li>
+                                    <li>The agent's <code>update()</code> method is called periodically. This typically happens after a fixed number of timesteps (e.g., every 2048 steps) or after a certain number of full episodes. The <code>update()</code> method performs the PPO learning steps using the experiences collected in the buffer.</li>
+                                </ol>
+                            </li>
+                            <li>Episode-level metrics (total reward, length, average losses) are logged.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Model Saving:</strong> The agent's model (<code>ActorCritic</code> network parameters) is saved periodically (e.g., every N episodes or if a new best average reward is achieved) to allow for later evaluation or resumption of training.</li>
+                </ul>
+                <h3>7.2. Covariance Matrix Handling</h3>
+                <p>The <code>covariance_matrix</code> (<code>&Sigma;</code>) is a critical input for the Mean-Variance Optimization (MVO) solver used by both the <code>PPOAgent.select_action</code> (for deriving weights from <code>&ĉ;</code>) and the <code>SPOPlusLoss</code> calculation (for deriving <code>w*(r_true)</code> and <code>w_for_max_term</code>). Its accurate and timely estimation is important.</p>
+                <ul>
+                    <li><strong>Rolling Window Approach (Common Practice):</strong> A common method is to calculate the covariance matrix using a rolling window of historical asset returns.
+                        <ul>
+                            <li>At each step (or less frequently, e.g., at the start of each episode or every few steps if computationally intensive), a window of recent historical returns (e.g., the past 60 or 90 trading days) is extracted from the environment's price data.</li>
+                            <li>The sample covariance matrix is then computed from these returns. Functions like <code>pandas.DataFrame.rolling(window=N).cov()</code> or custom calculations might be used.</li>
+                            <li>This approach allows the covariance matrix to adapt to changing market volatility and correlations over time, making the MVO problem more representative of current conditions.</li>
+                            <li>The specific <code>current_covariance_matrix</code> for a given timestep <code>t</code> would be based on returns from <code>t-N</code> to <code>t-1</code>.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Static/Pre-calculated:</strong> Less commonly for dynamic training, the covariance matrix might be calculated once from a larger historical dataset and kept fixed throughout training. This simplifies the process but may not reflect evolving market dynamics.</li>
+                    <li><strong>Ledoit-Wolf Shrinkage or other estimators:</strong> To improve the stability of the sample covariance matrix, especially with a limited number of samples or many assets, shrinkage estimators like Ledoit-Wolf can be applied. This involves "shrinking" the sample covariance matrix towards a more structured estimator (e.g., an identity matrix or a constant correlation matrix), potentially improving its out-of-sample performance.</li>
+                    <li>The choice of method (static, rolling window size, specific estimator) can significantly impact the portfolio weights derived by the MVO solver and thus the agent's learning and performance.</li>
+                </ul>
+                <h3>7.3. Key Training Metrics</h3>
+                <p>Monitoring various metrics during training is essential for assessing the agent's learning progress, diagnosing issues, and determining convergence:</p>
+                <ul>
+                    <li><strong>Episode Rewards:</strong> The cumulative reward obtained by the agent in each episode. An increasing trend generally indicates learning. Often, a moving average of episode rewards is plotted to smooth out noise.</li>
+                    <li><strong>Policy Loss (PPO):</strong> The loss associated with PPO's clipped surrogate objective. It reflects how much the policy is being changed to improve the likelihood of actions leading to higher advantages. Should ideally decrease or stabilize.</li>
+                    <li><strong>Value Loss (Critic):</strong> The mean squared error between the critic's state value estimates and the calculated discounted returns (<code>G_t</code>). Indicates how well the critic is learning to predict future returns from states. Should ideally decrease or stabilize.</li>
+                    <li><strong>SPO+ Loss:</strong> The loss component that measures decision regret. A decreasing trend suggests the agent is getting better at making predictions that lead to optimal portfolio decisions.</li>
+                    <li><strong>Entropy (Optional but common in PPO):</strong> The entropy of the action probability distribution. If an entropy bonus is used in the loss function, tracking entropy can indicate if the agent is maintaining sufficient exploration or if its policy is becoming too deterministic too quickly.</li>
+                    <li><strong>Portfolio-Specific Metrics (often during evaluation phases):</strong>
+                        <ul>
+                            <li><strong>Total Return:</strong> The overall percentage gain or loss of the portfolio over a defined period.</li>
+                            <li><strong>Sharpe Ratio:</strong> Risk-adjusted return (average return minus risk-free rate, divided by standard deviation of returns).</li>
+                            <li><strong>Sortino Ratio:</strong> Similar to Sharpe, but only penalizes downside volatility.</li>
+                            <li><strong>Maximum Drawdown:</strong> The largest peak-to-trough decline during a specific period.</li>
+                            <li><strong>Volatility:</strong> Standard deviation of portfolio returns.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <h3>7.4. Useful Training Visualizations (Descriptive)</h3>
+                <p>Visualizing metrics provides intuitive insights into the training process. While this document doesn't generate plots, here are descriptions of common and useful visualizations:</p>
+                <ul>
+                    <li><strong>Episode Rewards vs. Training Episodes/Timesteps:</strong>
+                        <ul>
+                            <li><em>What it shows:</em> Typically a line plot of the total reward per episode against the episode number or total timesteps. A smoothed version (e.g., rolling mean over 100 episodes) is often overlaid.</li>
+                            <li><em>Insights:</em> This is the primary indicator of learning. An upward trend suggests the agent is improving. Plateaus might indicate convergence or that the agent is stuck in a local optimum. High variance might suggest exploration issues or an unstable learning environment.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Loss Curves (Policy Loss, Value Loss, SPO+ Loss) vs. Training Updates/Epochs:</strong>
+                        <ul>
+                            <li><em>What they show:</em> Line plots for each loss component against the number of training updates or epochs.</li>
+                            <li><em>Insights:</em> Generally, losses should decrease and then stabilize. If losses diverge or oscillate wildly, it might indicate issues with learning rates, data normalization, or other hyperparameters. The behavior of SPO+ loss specifically shows if the decision-awareness aspect is improving.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Portfolio Value Over Time (During an Episode or Evaluation):</strong>
+                        <ul>
+                            <li><em>What it shows:</em> A line plot of the portfolio's monetary value as it evolves through an episode or a dedicated evaluation period.</li>
+                            <li><em>Insights:</em> Directly shows the wealth accumulation performance of the agent's strategy. Can be compared against benchmarks (e.g., buy-and-hold).</li>
+                        </ul>
+                    </li>
+                    <li><strong>Asset Allocation Weights Over Time (During an Episode or Evaluation):</strong>
+                        <ul>
+                            <li><em>What it shows:</em> A stacked area chart or multiple line plots showing the proportion of the portfolio allocated to each asset (and cash) at each step.</li>
+                            <li><em>Insights:</em> Reveals the agent's dynamic trading strategy. One can observe how actively the agent rebalances, which assets it favors under different (visualized or inferred) market conditions, and the level of diversification.</li>
+                        </ul>
+                    </li>
+                </ul>
+            </section>
+
+            <section id="module-interactions">
+                <h2>8. Code Walkthroughs and Module Interactions</h2>
+                <p><em>Placeholder for overview of how modules connect.</em></p>
+                <h3>8.1. End-to-End Data and Control Flow</h3>
+                <p><em>Placeholder for textual/diagrammatic description of: Data Loader -> Env -> Agent State -> Agent Action -> Env Reward -> Buffer -> Update.</em></p>
+                <h3>8.2. Prediction and Optimization Flow</h3>
+                <p><em>Placeholder for: Agent Prediction -> MVO Layer -> Portfolio Weights.</em></p>
+                <h3>8.3. Learning and Loss Feedback Flow</h3>
+                <p><em>Placeholder for: Agent Prediction & True Returns -> SPO Loss Layer -> Loss Value -> Agent Update.</em></p>
+            </section>
+
+            <section id="conclusion">
+                <h2>9. Conclusion and Future Work</h2>
+                <p><em>Placeholder for summary and potential future improvements.</em></p>
+            </section>
+        </main>
+        <footer>
+            <p>&copy; 2024 DRL SPO Project - Comprehensive Documentation</p>
+        </footer>
+    </div>
+</body>
+</html>
