@@ -161,18 +161,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    data_path_prefix = 'data/' 
-    
-    state_dim = None 
+    # --- Parameters ---
+    data_path_prefix = 'data/'
+    state_dim = None
     action_dim = None
     lr_actor = 0.0003
     lr_critic = 0.001
     gamma = 0.99
-    K_epochs = 80 
+    K_epochs = 80
     eps_clip = 0.2
-    action_std_init = 0.6 
+    action_std_init = 0.6
     
-    spo_plus_loss_coeff = 1.0 
+    spo_plus_loss_coeff = 1.0
     mvo_max_weight_per_asset = 0.25
 
     max_episodes = 100
@@ -180,8 +180,13 @@ def main():
     update_timestep_threshold = 40
     
     save_model_freq = 4
-    eval_freq = 5    
+    eval_freq = 5
 
+    # --- NEW: Covariance Lookback Parameters ---
+    cov_calc_lookback_window = 252 * 1  # 1 year lookback
+    min_cov_calculation_samples = 60
+
+    # --- Directory Setup ---
     model_save_path_base = './models/'
     if not os.path.exists(model_save_path_base):
         os.makedirs(model_save_path_base)
@@ -196,16 +201,14 @@ def main():
     print(f"Logging directory setup at: {log_output_dir}")
     print(f"SHAP model snapshots will be saved in: {shap_models_dir}")
 
-
-    cov_calc_lookback_window = 252 * 1
-    min_cov_calculation_samples = 60
-
+    # --- Data Loading ---
     print("Loading data...")
     try:
         all_data = load_all_data(data_path_prefix=data_path_prefix)
         if all_data['chosen_etf_prices'].empty or all_data['combined_features'].empty:
-             print("Critical dataframes (chosen_etf_prices or combined_features) are empty. Exiting.")
-             return 
+            print("Critical dataframes (chosen_etf_prices or combined_features) are empty. Exiting.")
+            return
+        # This DataFrame is now primarily used inside the environment for rolling calculations
         chosen_etf_prices_df = all_data['chosen_etf_prices']
     except Exception as e:
         print(f"Failed to load data: {e}")
@@ -213,6 +216,7 @@ def main():
         return
     print("Data loaded successfully.")
 
+    # --- Environment Initialization ---
     print("Initializing DRL environment...")
     try:
         env = PortfolioEnv(processed_data=all_data)
@@ -227,31 +231,24 @@ def main():
     action_dim = env.action_space.shape[0]
     print(f"Environment initialized. State dim: {state_dim}, Action dim (n_etfs): {action_dim}")
 
-    print("Calculating initial static covariance matrix...")
-    initial_returns_for_cov = chosen_etf_prices_df.pct_change().dropna()
-    if len(initial_returns_for_cov) < min_cov_calculation_samples: 
-        initial_covariance_matrix_np = np.eye(env.n_etfs) * 0.01
-    else:
-        initial_covariance_matrix_np = initial_returns_for_cov.cov().values
-    initial_covariance_matrix_tensor = torch.tensor(initial_covariance_matrix_np, dtype=torch.float32).to(device)
-    initial_covariance_matrix_tensor += 1e-6 * torch.eye(env.n_etfs, device=device)
-    current_covariance_matrix_tensor = initial_covariance_matrix_tensor.clone()
-    print("Initial static covariance matrix calculated.")
+    # ----- The initial static covariance matrix calculation has been removed -----
 
+    # --- Agent Initialization ---
     print("Initializing MVO solver, SPO+ loss module, and DRL agent...")
     mvo_solver = DifferentiableMVO(num_assets=action_dim, max_weight_per_asset=mvo_max_weight_per_asset).to(device)
     spo_loss_module = SPOPlusLoss(num_assets=action_dim, mvo_max_weight_per_asset=mvo_max_weight_per_asset).to(device)
     agent = PPOAgent(state_dim, action_dim,
-                     mvo_solver_instance=mvo_solver,
-                     spo_loss_instance=spo_loss_module,
-                     lr_actor=lr_actor, lr_critic=lr_critic,
-                     gamma=gamma, K_epochs=K_epochs, eps_clip=eps_clip,
-                     action_std_init=action_std_init,
-                     spo_plus_loss_coeff=spo_plus_loss_coeff)
+                       mvo_solver_instance=mvo_solver,
+                       spo_loss_instance=spo_loss_module,
+                       lr_actor=lr_actor, lr_critic=lr_critic,
+                       gamma=gamma, K_epochs=K_epochs, eps_clip=eps_clip,
+                       action_std_init=action_std_init,
+                       spo_plus_loss_coeff=spo_plus_loss_coeff)
     agent.policy.to(device)
     agent.policy_old.to(device)
     print("Agent initialized.")
 
+    # --- Training Loop ---
     print("Starting training loop...")
     timestep_count = 0
     episode_rewards_history = []
@@ -265,6 +262,12 @@ def main():
         for t in range(1, max_timesteps_per_episode + 1):
             timestep_count += 1
             
+            # --- Get Rolling Covariance at each timestep ---
+            current_cov_np = env.get_rolling_covariance(cov_calc_lookback_window, min_cov_calculation_samples)
+            current_covariance_matrix_tensor = torch.tensor(current_cov_np, dtype=torch.float32).to(device)
+            current_covariance_matrix_tensor += 1e-6 * torch.eye(env.n_etfs, device=device)
+            
+            # --- Agent takes an action ---
             action_portfolio_weights, predicted_returns_for_step = agent.select_action(state, current_covariance_matrix_tensor)
             next_state, reward, done, info = env.step(action_portfolio_weights)
             
@@ -278,8 +281,9 @@ def main():
             state = next_state
             episode_reward += reward
             
-            if timestep_count % update_timestep_threshold == 0 and len(agent.buffer['states']) > 0 :
-                update_metrics = agent.update(current_covariance_matrix_tensor)
+            # --- Update Agent ---
+            if timestep_count % update_timestep_threshold == 0 and len(agent.buffer['states']) > 0:
+                update_metrics = agent.update(current_covariance_matrix_tensor) # Use the latest covariance matrix for the update
                 if update_metrics:
                     current_agent_update_count += 1
                     spo_c = update_metrics['spo_components']
@@ -307,26 +311,34 @@ def main():
         portfolio_value_history.append(env.current_portfolio_value)
         print(f"Episode: {episode}, Timesteps: {t}, Reward: {episode_reward:.2f}, Portfolio Value: {env.current_portfolio_value:.2f}")
 
+        # --- Periodic Evaluation during Training ---
         if episode % eval_freq == 0:
             print(f"--- Starting Evaluation for Training Epoch {episode} ---")
             eval_state = env.reset_for_eval() if hasattr(env, 'reset_for_eval') else env.reset()
 
             for eval_ep_num in range(1, 3):
                 for t_eval in range(1, max_timesteps_per_episode + 1):
-                    eval_portfolio_weights, eval_predicted_returns = agent.select_action(eval_state, current_covariance_matrix_tensor, is_eval=True)
+                    # --- Get Rolling Covariance for Evaluation Step ---
+                    eval_cov_np = env.get_rolling_covariance(cov_calc_lookback_window, min_cov_calculation_samples)
+                    eval_covariance_matrix_tensor = torch.tensor(eval_cov_np, dtype=torch.float32).to(device)
+                    eval_covariance_matrix_tensor += 1e-6 * torch.eye(env.n_etfs, device=device)
+
+                    eval_portfolio_weights, eval_predicted_returns = agent.select_action(eval_state, eval_covariance_matrix_tensor, is_eval=True)
                     append_to_csv('portfolio_weights_evolution',
-                                 [episode, eval_ep_num, t_eval] + eval_portfolio_weights.tolist())
+                                  [episode, eval_ep_num, t_eval] + eval_portfolio_weights.tolist())
+                    
                     next_eval_state, eval_reward, eval_done, eval_info = env.step(eval_portfolio_weights)
 
                     append_to_csv('feature_analysis_data',
-                                 [episode] + eval_state.tolist() + \
-                                 eval_predicted_returns.tolist())
+                                  [episode] + eval_state.tolist() + \
+                                  eval_predicted_returns.tolist())
                     eval_state = next_eval_state
                     if eval_done:
                         break
                 print(f"Evaluation Episode {eval_ep_num} for Training Epoch {episode} ended. Final Value: {env.current_portfolio_value:.2f}")
             print(f"--- Finished Evaluation for Training Epoch {episode} ---")
 
+        # --- Save Model Snapshot ---
         if episode % save_model_freq == 0:
             model_filename = os.path.join(model_save_path_base, f"ppo_portfolio_ep{episode}.pth")
             agent.save_model(model_filename)
@@ -348,13 +360,12 @@ def main():
     if hasattr(env, 'close') and callable(env.close):
         env.close()
 
-    print(f"Training visualizations (basic mean losses) can be generated from console output or by extending plotting scripts to use CSVs.")
+    print(f"Training visualizations can be generated from console output or by extending plotting scripts to use CSVs.")
 
-
+    # --- Final Evaluation and Performance Analysis ---
     print("\n--- Running Final Evaluation and Performance Analysis ---")
 
     final_eval_env = env
-
     final_eval_portfolio_values = []
     final_eval_dates = []
 
@@ -364,28 +375,33 @@ def main():
     if hasattr(final_eval_env, 'current_date'):
         final_eval_dates.append(pd.to_datetime(final_eval_env.current_date))
 
-
     final_policy_to_eval = agent.policy_old
 
     for t_eval in range(1, max_timesteps_per_episode * 2):
+        # --- Get Rolling Covariance for Final Evaluation Step ---
+        current_cov_np_eval = final_eval_env.get_rolling_covariance(cov_calc_lookback_window, min_cov_calculation_samples)
+        current_covariance_matrix_tensor_eval = torch.tensor(current_cov_np_eval, dtype=torch.float32).to(device)
+        current_covariance_matrix_tensor_eval += 1e-6 * torch.eye(final_eval_env.n_etfs, device=device)
+
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
         with torch.no_grad():
             positive_mean_action_tensor = final_policy_to_eval._get_positive_action_mean(state_tensor)
 
-        final_eval_portfolio_weights = agent.mvo_solver(positive_mean_action_tensor, current_covariance_matrix_tensor)
+        final_eval_portfolio_weights = agent.mvo_solver(positive_mean_action_tensor, current_covariance_matrix_tensor_eval)
         final_eval_portfolio_weights_np = final_eval_portfolio_weights.cpu().numpy().flatten()
 
         next_state, reward, done, info = final_eval_env.step(final_eval_portfolio_weights_np)
         
         final_eval_portfolio_values.append(final_eval_env.current_portfolio_value)
-        if hasattr(final_eval_env, 'current_date'):
-            final_eval_dates.append(pd.to_datetime(final_eval_env.current_date))
+        if 'current_date' in info: # Assumes you've modified env to return date in info
+            final_eval_dates.append(pd.to_datetime(info['current_date']))
 
         state = next_state
         if done:
             break
 
-    if final_eval_dates:
+    # --- Final Performance Metrics and Plotting ---
+    if final_eval_dates and len(final_eval_dates) == len(final_eval_portfolio_values):
         pv_series_final = pd.Series(final_eval_portfolio_values, index=pd.DatetimeIndex(final_eval_dates))
     else:
         pv_series_final = pd.Series(final_eval_portfolio_values)
@@ -397,7 +413,7 @@ def main():
 
     plot_performance(pv_series_final, title="Final Agent Performance", metrics=performance_metrics, dates=final_eval_dates if final_eval_dates else None)
 
-    fig_train, ax_train = plt.subplots(2,1, figsize=(10,8), sharex=True)
+    fig_train, ax_train = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
     ax_train[0].plot(episode_rewards_history, label="Episode Reward")
     ax_train[0].set_title("Training Episode Rewards")
     ax_train[0].set_ylabel("Reward")
@@ -417,3 +433,14 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+
+# Total Return: 0.0332
+# Annualized Volatility: 0.0517
+# Sharpe Ratio: 1.6346
+# Max Drawdown: -0.0240
+# Sortino Ratio: 2.0084
+
+# those are my metrics for now bro

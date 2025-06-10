@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 import os
 
+
+
+
 MIN_VALID_STEPS = 20
 
 class PortfolioEnv(gym.Env):
@@ -202,6 +205,30 @@ class PortfolioEnv(gym.Env):
         etf_names = self.chosen_etf_prices.columns.tolist()
         weights_info = ", ".join([f"{etf_names[i]}: {formatted_weights[i]}" for i in range(self.n_etfs)]) + f", Cash: {formatted_weights[self.n_etfs]}"
         print(f'Weights: {weights_info}')
+
+    # In drl_environment.py, inside the PortfolioEnv class
+    def get_rolling_covariance(self, lookback_window=252, min_samples=60):
+        """
+        Calculates the covariance matrix based on a rolling window of past returns.
+        """
+        # Determine the current date of the environment
+        current_date = self.dates[self.current_step]
+        
+        # Define the start date for the lookback period
+        start_date = current_date - pd.DateOffset(days=lookback_window)
+        
+        # Slice the original prices DataFrame to get the historical window
+        historical_prices = self.chosen_etf_prices_original.loc[start_date:current_date]
+        
+        # Calculate periodic returns for the window
+        returns = historical_prices.pct_change().dropna()
+        
+        # Ensure there are enough samples to calculate a stable covariance
+        if len(returns) < min_samples:
+            # Fallback to an identity matrix if data is insufficient
+            return np.eye(self.n_etfs) * 0.01
+        else:
+            return returns.cov().values
 
 
 if __name__ == '__main__':
