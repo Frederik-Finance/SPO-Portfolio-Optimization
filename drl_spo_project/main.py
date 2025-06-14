@@ -260,12 +260,293 @@ def plot_portfolio_weights_evolution(dates, weights_history, etf_tickers, output
     plt.close(fig)
 
 
+def calculate_equal_weighted_buy_and_hold_performance(initial_investment: float, etf_prices_df: pd.DataFrame) -> pd.Series:
+    """
+    Calculates the performance of an equal-weighted buy-and-hold strategy.
+
+    Args:
+        initial_investment (float): The total initial investment amount.
+        etf_prices_df (pd.DataFrame): DataFrame with datetime index and ETF prices in columns.
+
+    Returns:
+        pd.Series: A Series containing the portfolio value over time, indexed by date.
+    """
+    if not isinstance(etf_prices_df.index, pd.DatetimeIndex):
+        print("Warning: etf_prices_df index is not a DatetimeIndex. Attempting to convert.")
+        try:
+            etf_prices_df.index = pd.to_datetime(etf_prices_df.index)
+        except Exception as e:
+            print(f"Error: Could not convert etf_prices_df index to DatetimeIndex: {e}")
+            return pd.Series(dtype=float)
+
+    if etf_prices_df.empty:
+        print("Warning: etf_prices_df is empty in calculate_equal_weighted_buy_and_hold_performance.")
+        # Return a series with the initial investment at the first potential date if available, else empty
+        idx = pd.to_datetime([])
+        if hasattr(etf_prices_df, 'index') and not etf_prices_df.index.empty:
+             idx = pd.DatetimeIndex([etf_prices_df.index[0]])
+        elif hasattr(etf_prices_df, 'index'): # index exists but is empty
+             idx = etf_prices_df.index
+
+        if not idx.empty:
+            return pd.Series([initial_investment], index=idx, dtype=float)
+        else: # Completely empty, cannot even determine a start date
+            return pd.Series(dtype=float)
+
+    num_etfs = len(etf_prices_df.columns)
+    if num_etfs == 0:
+        print("Warning: No ETF columns in etf_prices_df for buy-and-hold.")
+        # Similar to empty df, return initial investment for the period
+        if not etf_prices_df.index.empty:
+            return pd.Series([initial_investment] * len(etf_prices_df.index), index=etf_prices_df.index, dtype=float)
+        else:
+            return pd.Series(dtype=float)
+
+    investment_per_etf = initial_investment / num_etfs
+
+    portfolio_values = pd.Series(index=etf_prices_df.index, dtype=float)
+
+    start_date = etf_prices_df.index[0]
+    initial_prices = etf_prices_df.loc[start_date].copy() # Use .copy() to avoid SettingWithCopyWarning
+
+    # Handle potential NaN initial prices: For simplicity, we'll skip ETFs with NaN initial prices
+    # A more robust solution might involve filling NaNs or raising an error.
+    valid_initial_prices = initial_prices.dropna()
+    if len(valid_initial_prices) < num_etfs:
+        print(f"Warning: Some ETFs had NaN initial prices on {start_date}. They will be excluded from buy & hold.")
+        if len(valid_initial_prices) == 0:
+            print("Error: All ETFs have NaN initial prices. Cannot proceed with buy & hold.")
+            return pd.Series([initial_investment] * len(etf_prices_df.index), index=etf_prices_df.index, dtype=float) # Or empty
+        # Recalculate investment per ETF based on valid ones for a more accurate simulation
+        num_etfs = len(valid_initial_prices) # Update num_etfs
+        investment_per_etf = initial_investment / num_etfs # Re-distribute investment
+        initial_prices = valid_initial_prices
+
+
+    shares_held = investment_per_etf / initial_prices
+    # Align shares_held with the original columns, filling NaNs for excluded ETFs if any
+    shares_held = shares_held.reindex(etf_prices_df.columns).fillna(0)
+
+
+    last_valid_portfolio_value = initial_investment # Initialize with initial investment
+
+    for date_idx, date in enumerate(etf_prices_df.index):
+        current_prices_for_date = etf_prices_df.loc[date]
+
+        # Value of each ETF holding: shares * current price
+        # If a current price is NaN, that part of the product becomes NaN.
+        value_of_each_etf = shares_held * current_prices_for_date
+
+        # Summing will ignore NaNs by default if skipna=True (default for Series.sum())
+        # If all values in value_of_each_etf are NaN (e.g. all prices missing for a day), sum is 0.
+        # This might not be desired; we might want to carry forward value.
+        total_portfolio_value = value_of_each_etf.sum() # skipna=True is default
+
+        if pd.isna(total_portfolio_value):
+            if date_idx == 0: # If NaN on the very first day (after initial price check)
+                 total_portfolio_value = initial_investment # Fallback to initial
+            else:
+                 total_portfolio_value = last_valid_portfolio_value # Carry forward last known value
+        else:
+            last_valid_portfolio_value = total_portfolio_value
+
+        portfolio_values.loc[date] = total_portfolio_value
+
+    return portfolio_values
+
+
+def calculate_strategy_with_periodic_rebalancing(
+    agent_target_weights_history: pd.DataFrame,
+    etf_prices_df: pd.DataFrame,
+    initial_investment: float,
+    rebalance_frequency_days: int,
+    rebalancing_fee_pct: float
+) -> pd.Series:
+    """
+    Calculates portfolio performance with periodic rebalancing based on agent's target weights.
+
+    Args:
+        agent_target_weights_history (pd.DataFrame): DataFrame with DatetimeIndex,
+                                                     ETF tickers as columns, and target
+                                                     allocation weights as values.
+        etf_prices_df (pd.DataFrame): DataFrame with DatetimeIndex and ETF prices.
+        initial_investment (float): Initial capital.
+        rebalance_frequency_days (int): How often to rebalance (e.g., 7 for weekly).
+        rebalancing_fee_pct (float): Percentage fee on traded volume (e.g., 0.001 for 0.1%).
+
+    Returns:
+        pd.Series: Portfolio value over time.
+    """
+
+    # --- Input Validation & Setup ---
+    if not isinstance(etf_prices_df.index, pd.DatetimeIndex):
+        print("Warning: etf_prices_df index is not a DatetimeIndex. Attempting conversion.")
+        try:
+            etf_prices_df.index = pd.to_datetime(etf_prices_df.index)
+        except Exception as e:
+            print(f"Error converting etf_prices_df index: {e}")
+            return pd.Series(dtype=float)
+
+    if not isinstance(agent_target_weights_history.index, pd.DatetimeIndex):
+        print("Warning: agent_target_weights_history index is not a DatetimeIndex. Attempting conversion.")
+        try:
+            agent_target_weights_history.index = pd.to_datetime(agent_target_weights_history.index)
+        except Exception as e:
+            print(f"Error converting agent_target_weights_history index: {e}")
+            return pd.Series(dtype=float)
+
+    # Align DataFrames by taking the intersection of their dates and ensuring same column order
+    common_dates = etf_prices_df.index.intersection(agent_target_weights_history.index)
+    if common_dates.empty:
+        print("Error: No common dates between etf_prices_df and agent_target_weights_history.")
+        return pd.Series(dtype=float)
+
+    _etf_prices_df = etf_prices_df.loc[common_dates].copy()
+    _agent_target_weights_history = agent_target_weights_history.loc[common_dates].copy()
+
+    # Align columns (important if target weights don't include all price columns or vice-versa)
+    common_columns = _etf_prices_df.columns.intersection(_agent_target_weights_history.columns)
+    if common_columns.empty:
+        print("Error: No common ETF tickers between etf_prices_df and agent_target_weights_history columns.")
+        return pd.Series(dtype=float)
+
+    _etf_prices_df = _etf_prices_df[common_columns]
+    _agent_target_weights_history = _agent_target_weights_history[common_columns]
+
+
+    if _etf_prices_df.empty or _agent_target_weights_history.empty:
+        print("Error: DataFrame(s) became empty after alignment.")
+        return pd.Series(dtype=float)
+
+    etf_tickers = _etf_prices_df.columns.tolist()
+    portfolio_values = pd.Series(index=_etf_prices_df.index, dtype=float)
+    current_shares = pd.Series(0.0, index=etf_tickers)
+    current_cash = initial_investment
+
+    # --- Iterate Through Dates ---
+    for day_index, current_date in enumerate(_etf_prices_df.index):
+        current_prices = _etf_prices_df.loc[current_date]
+
+        # Handle potential NaN prices for the current day
+        if current_prices.isnull().any():
+            # Option 1: Carry forward last portfolio value if critical prices are missing
+            # Option 2: Use last known prices for missing ones (fill forward on price data)
+            # For this simulation, if current price for a held asset is NaN, its value becomes NaN.
+            # If all prices are NaN, portfolio_value_before_rebalance might be NaN or 0.
+            # Let's assume current_prices might have some NaNs but not for all held assets always.
+            # A robust price handler would be to ffill prices in _etf_prices_df beforehand.
+            pass # Proceeding, sum() later will handle NaNs in value calculation
+
+        portfolio_value_before_rebalance = (current_shares * current_prices).fillna(0).sum() + current_cash
+
+        is_rebalance_day = (day_index == 0) or (day_index % rebalance_frequency_days == 0)
+
+        if is_rebalance_day:
+            target_weights_for_day = _agent_target_weights_history.loc[current_date]
+
+            # Ensure target weights sum to <= 1, assuming cash is the remainder
+            target_weights_for_day = target_weights_for_day / target_weights_for_day.sum() if target_weights_for_day.sum() > 1 else target_weights_for_day
+            target_weights_for_day = target_weights_for_day.fillna(0) # Handle any NaNs in target weights
+
+            value_of_current_holdings_each_etf = current_shares * current_prices
+
+            # Target dollar value for each ETF based on current portfolio value
+            target_value_each_etf = portfolio_value_before_rebalance * target_weights_for_day
+
+            trades_value_each_etf = target_value_each_etf - value_of_current_holdings_each_etf.fillna(0)
+            total_traded_volume = trades_value_each_etf.abs().sum()
+            rebalancing_cost = total_traded_volume * rebalancing_fee_pct
+
+            current_cash -= rebalancing_cost
+            portfolio_value_after_fees = portfolio_value_before_rebalance - rebalancing_cost
+
+            # Calculate new shares, handling division by zero or NaN prices
+            # Replace inf/-inf (from division by zero price) and NaN (from 0/NaN or NaN price) with 0 shares
+            with np.errstate(divide='ignore', invalid='ignore'): # Suppress division by zero warnings
+                new_shares_temp = (portfolio_value_after_fees * target_weights_for_day) / current_prices
+            new_shares_temp.replace([np.inf, -np.inf], 0, inplace=True)
+            current_shares = new_shares_temp.fillna(0)
+
+            cash_after_etf_purchases = portfolio_value_after_fees - (current_shares * current_prices).fillna(0).sum()
+            current_cash = cash_after_etf_purchases
+
+            final_portfolio_value_for_day = (current_shares * current_prices).fillna(0).sum() + current_cash
+            portfolio_values.loc[current_date] = final_portfolio_value_for_day
+        else:
+            portfolio_values.loc[current_date] = portfolio_value_before_rebalance
+
+    return portfolio_values.ffill()
+
+
+def plot_comparative_equity_curves(strategies_data: dict, output_dir: str):
+    """
+    Plots equity curves for multiple strategies on a single chart.
+
+    Args:
+        strategies_data (dict): A dictionary where keys are strategy names (str)
+                                and values are Pandas Series (portfolio values over time)
+                                with a DatetimeIndex.
+        output_dir (str): Directory to save the plot.
+    """
+    if not strategies_data:
+        print("Warning: strategies_data is empty. Cannot plot comparative equity curves.")
+        return
+
+    plt.figure(figsize=(12, 8))
+
+    # Define line styles and colors if more customization is needed,
+    # but matplotlib's default cycling should be fine for a few series.
+    # linestyles = ['-', '--', '-.', ':']
+    # colors = plt.cm.get_cmap('tab10', len(strategies_data)).colors
+
+    all_series_valid = True
+    for i, (strategy_name, portfolio_values_series) in enumerate(strategies_data.items()):
+        if not isinstance(portfolio_values_series, pd.Series):
+            print(f"Warning: Item '{strategy_name}' in strategies_data is not a Pandas Series. Skipping.")
+            continue
+        if not isinstance(portfolio_values_series.index, pd.DatetimeIndex):
+            print(f"Warning: Index of Series '{strategy_name}' is not a DatetimeIndex. Skipping.")
+            all_series_valid = False # Mark to potentially skip plotting if critical
+            continue
+        if portfolio_values_series.empty:
+            print(f"Warning: Series '{strategy_name}' is empty. Skipping.")
+            continue
+
+        plt.plot(portfolio_values_series.index, portfolio_values_series.values, label=strategy_name) # Simpler plot call
+
+    if not plt.gca().lines: # Check if any lines were actually plotted
+        print("No valid data to plot for comparative equity curves after checks.")
+        plt.close() # Close the empty figure
+        return
+
+    plt.title('Comparative Portfolio Performance')
+    plt.xlabel('Date')
+    plt.ylabel('Portfolio Value')
+    plt.legend()
+    plt.grid(True)
+
+    # Format x-axis date labels
+    fig = plt.gcf() # Get current figure to use autofmt_xdate
+    ax = plt.gca() # Get current axis
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    fig.autofmt_xdate()
+
+    # Save the plot
+    plot_filename = os.path.join(output_dir, "comparative_equity_curves.png")
+    try:
+        plt.savefig(plot_filename)
+        print(f"Comparative equity curves plot saved to {plot_filename}")
+    except Exception as e:
+        print(f"Error saving comparative equity curves plot: {e}")
+    plt.close(fig)
+
+
 def main():
     global log_output_dir
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    TRAIN_TEST_CUTOFF_DATE = '2022-01-01'
+    TRAIN_TEST_CUTOFF_DATE = '2021-01-01'
 
     # --- Parameters ---
     data_path_prefix = 'data/'
@@ -281,7 +562,7 @@ def main():
     spo_plus_loss_coeff = 1.0
     mvo_max_weight_per_asset = 0.25
 
-    max_episodes = 200
+    max_episodes = 100
     max_timesteps_per_episode = 40
     update_timestep_threshold = 40
     
@@ -291,6 +572,10 @@ def main():
     # --- NEW: Covariance Lookback Parameters ---
     cov_calc_lookback_window = 252 * 1  # 1 year lookback
     min_cov_calculation_samples = 60
+
+    # --- Parameters for Periodic Rebalancing Strategy Simulation ---
+    REBALANCE_FREQUENCY_DAYS = 7  # e.g., 7 for weekly rebalancing
+    REBALANCING_FEE_PCT = 0.001   # e.g., 0.001 for 0.1% fee on traded volume
 
     # --- Directory Setup ---
     model_save_path_base = './models/'
@@ -538,7 +823,8 @@ def main():
     print("Starting backtest loop...")
     backtest_portfolio_values = []
     backtest_dates = []
-    backtest_portfolio_weights_over_time = [] # Initialize list to store weights
+    backtest_portfolio_weights_over_time = [] # Initialize list to store weights (these are env.current_weights, after cash)
+    agent_target_weights_history = [] # Initialize list for agent's MVO output (ETFs only)
 
     state = backtest_env.reset_for_backtest()
     backtest_portfolio_values.append(backtest_env.current_portfolio_value)
@@ -568,6 +854,7 @@ def main():
 
         backtest_action_weights_tensor = backtest_agent.mvo_solver(positive_mean_action_tensor, current_covariance_matrix_tensor_backtest)
         backtest_action_weights_np = backtest_action_weights_tensor.cpu().numpy().flatten()
+        agent_target_weights_history.append(backtest_action_weights_np) # Store agent's target ETF weights
         
         next_state, reward, done, info = backtest_env.step(backtest_action_weights_np)
         backtest_portfolio_weights_over_time.append(backtest_env.current_weights) # Store weights
@@ -706,6 +993,86 @@ def main():
         output_dir=log_output_dir
     )
 
+    # --- Additional Strategy Calculations and Comparative Plotting ---
+    print("\n--- Calculating Additional Benchmark Strategies ---")
+
+    # Ensure etf_prices_for_strategies is correctly defined using backtest_env's data
+    # This data should span the entire backtesting period.
+    # backtest_env.chosen_etf_prices is the DataFrame of prices used by the environment.
+    # Its index should align with the period covered by backtest_dates.
+    etf_prices_for_strategies = backtest_env.chosen_etf_prices.copy()
+
+    # 1. Buy-and-Hold Equal Weighted Strategy
+    print("\n--- Calculating Buy-and-Hold Equal Weighted Performance ---")
+    bh_ew_portfolio_values = calculate_equal_weighted_buy_and_hold_performance(
+        initial_investment=backtest_env.initial_investment,
+        etf_prices_df=etf_prices_for_strategies
+    )
+
+    # 2. Agent's Strategy with Periodic Rebalancing (using raw MVO outputs)
+    etf_tickers_list = backtest_env.chosen_etf_prices.columns.tolist() # Used for agent_weights_df columns
+    rebalanced_strategy_portfolio_values = pd.Series(dtype=float) # Default to empty
+
+    if not agent_target_weights_history:
+        print("Warning: Agent target weights history is empty. Skipping rebalanced strategy calculation.")
+    else:
+        # The dates for agent's decisions are the dates on which actions were taken.
+        # These correspond to backtest_dates[1:] if backtest_dates includes initial state date.
+        # The agent_target_weights_history has N entries, backtest_dates has N+1.
+        # The prices in etf_prices_for_strategies are indexed by dates that should include these decision dates.
+
+        decision_dates_for_agent_weights = pd.to_datetime(backtest_dates[1:]) # N dates for N decisions
+
+        if len(agent_target_weights_history) != len(decision_dates_for_agent_weights):
+            print(f"Warning: Mismatch in length between agent_target_weights_history ({len(agent_target_weights_history)}) and decision_dates ({len(decision_dates_for_agent_weights)}). This may indicate an issue in data collection.")
+            # Adjust to the minimum length to prevent crashing, though this indicates a potential logical flaw elsewhere.
+            min_len = min(len(agent_target_weights_history), len(decision_dates_for_agent_weights))
+            agent_target_weights_history_adjusted = agent_target_weights_history[:min_len]
+            decision_dates_for_agent_weights_adjusted = decision_dates_for_agent_weights[:min_len]
+            print(f"Adjusted to use {min_len} entries for rebalanced strategy calculation.")
+        else:
+            agent_target_weights_history_adjusted = agent_target_weights_history
+            decision_dates_for_agent_weights_adjusted = decision_dates_for_agent_weights
+
+        if not decision_dates_for_agent_weights_adjusted.empty:
+            agent_weights_df = pd.DataFrame(
+                agent_target_weights_history_adjusted,
+                index=decision_dates_for_agent_weights_adjusted, # Dates when weights were decided
+                columns=etf_tickers_list
+            )
+
+            print("\n--- Calculating Strategy with Periodic Rebalancing and Fees ---")
+            # The calculate_strategy_with_periodic_rebalancing function will align agent_weights_df
+            # with etf_prices_for_strategies using common dates.
+            rebalanced_strategy_portfolio_values = calculate_strategy_with_periodic_rebalancing(
+                agent_target_weights_history=agent_weights_df, # Target weights for ETFs only
+                etf_prices_df=etf_prices_for_strategies,      # Full price history for the backtest period
+                initial_investment=backtest_env.initial_investment,
+                rebalance_frequency_days=REBALANCE_FREQUENCY_DAYS,
+                rebalancing_fee_pct=REBALANCING_FEE_PCT
+            )
+        else:
+            print("Warning: No decision dates available for agent weights after adjustment. Skipping rebalanced strategy.")
+
+    # 3. Gather Data for Comparative Plot
+    # pv_series_backtest is the DRL agent's performance from the environment simulation (includes env transaction costs)
+    # It should be indexed by all dates in backtest_dates (N+1 length).
+    strategies_data_for_plot = {
+        # "DRL Agent (Env. Costs)": pv_series_backtest
+    }
+    if not bh_ew_portfolio_values.empty:
+        strategies_data_for_plot["Buy & Hold Equal-Weighted"] = bh_ew_portfolio_values
+
+    if not rebalanced_strategy_portfolio_values.empty:
+        strategies_data_for_plot["DRL Agent (Periodic Rebalance + Fees)"] = rebalanced_strategy_portfolio_values
+
+    # 4. Plot Comparative Equity Curves
+    print("\n--- Plotting Comparative Equity Curves ---")
+    plot_comparative_equity_curves(
+        strategies_data=strategies_data_for_plot,
+        output_dir=log_output_dir
+    )
+
     # --- Training Curves Plot (remains) ---
     fig_train, ax_train = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
     ax_train[0].plot(episode_rewards_history, label="Episode Reward")
@@ -730,11 +1097,3 @@ if __name__ == '__main__':
 
 
 
-
-# Total Return: 0.0332
-# Annualized Volatility: 0.0517
-# Sharpe Ratio: 1.6346
-# Max Drawdown: -0.0240
-# Sortino Ratio: 2.0084
-
-# those are my metrics for now bro
