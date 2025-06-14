@@ -562,7 +562,7 @@ def main():
     spo_plus_loss_coeff = 1.0
     mvo_max_weight_per_asset = 0.25
 
-    max_episodes = 100
+    max_episodes = 80
     max_timesteps_per_episode = 40
     update_timestep_threshold = 40
     
@@ -864,10 +864,11 @@ def main():
         backtest_dates.append(pd.to_datetime(current_date_info))
 
         # Convert backtest_portfolio_weights_over_time to DataFrame and save to Excel
-        df_backtest_portfolio_weights = pd.DataFrame(backtest_portfolio_weights_over_time, index=backtest_dates[1:])
+        etf_names = backtest_env.chosen_etf_prices.columns.tolist()
+        df_backtest_portfolio_weights = pd.DataFrame(backtest_portfolio_weights_over_time, index=backtest_dates[1:], columns=etf_names + ['Cash'])
         df_backtest_portfolio_weights.to_excel(os.path.join(log_output_dir, "backtest_portfolio_weights_over_time.xlsx"))
         print("Backtest portfolio weights over time saved to backtest_portfolio_weights_over_time.xlsx")
-        
+
         state = next_state
         if done:
             print("Backtest loop finished.")

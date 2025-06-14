@@ -19,8 +19,3 @@ epoch,model_snapshot_path
 72,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep72.pth
 76,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep76.pth
 80,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep80.pth
-84,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep84.pth
-88,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep88.pth
-92,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep92.pth
-96,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep96.pth
-100,drl_spo_project/training_logs/shap_model_snapshots/actor_model_ep100.pth
