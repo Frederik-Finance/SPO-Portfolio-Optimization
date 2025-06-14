@@ -862,6 +862,11 @@ def main():
         backtest_portfolio_values.append(backtest_env.current_portfolio_value)
         current_date_info = info.get('current_date', backtest_env.current_date)
         backtest_dates.append(pd.to_datetime(current_date_info))
+
+        # Convert backtest_portfolio_weights_over_time to DataFrame and save to Excel
+        df_backtest_portfolio_weights = pd.DataFrame(backtest_portfolio_weights_over_time, index=backtest_dates[1:])
+        df_backtest_portfolio_weights.to_excel(os.path.join(log_output_dir, "backtest_portfolio_weights_over_time.xlsx"))
+        print("Backtest portfolio weights over time saved to backtest_portfolio_weights_over_time.xlsx")
         
         state = next_state
         if done:
@@ -894,6 +899,9 @@ def main():
     plot_performance(pv_series_backtest, title="Backtest Performance (Out-of-Sample)",
                      metrics=backtest_performance_metrics,
                      dates=pv_series_backtest.index.tolist())
+    # Save the dataframe used to create the backtest plot
+    pv_series_backtest.to_excel(os.path.join(log_output_dir, "backtest_portfolio_values.xlsx"))
+    print("Backtest portfolio values saved to backtest_portfolio_values.xlsx")
 
     # print("\n--- Generating QuantStats Report ---") # Removed
     # if not isinstance(pv_series_backtest.index, pd.DatetimeIndex): # Removed
@@ -1009,6 +1017,16 @@ def main():
         etf_prices_df=etf_prices_for_strategies
     )
 
+    # Calculate and print performance metrics for the equal-weighted benchmark
+    bh_ew_performance_metrics = calculate_performance_metrics(bh_ew_portfolio_values)
+    print("\n--- Equal-Weighted Benchmark Performance Metrics ---")
+    if bh_ew_performance_metrics:
+        for k, v in bh_ew_performance_metrics.items():
+            if isinstance(v, (int, float)):
+                print(f"{k}: {v:.4f}")
+    else:
+        print("No metrics calculated for the equal-weighted benchmark.")
+
     # 2. Agent's Strategy with Periodic Rebalancing (using raw MVO outputs)
     etf_tickers_list = backtest_env.chosen_etf_prices.columns.tolist() # Used for agent_weights_df columns
     rebalanced_strategy_portfolio_values = pd.Series(dtype=float) # Default to empty
@@ -1066,6 +1084,11 @@ def main():
     if not rebalanced_strategy_portfolio_values.empty:
         strategies_data_for_plot["DRL Agent (Periodic Rebalance + Fees)"] = rebalanced_strategy_portfolio_values
 
+    # Save the dataframe used to create the equal weighted vs drl performance plot
+    df_strategies = pd.DataFrame(strategies_data_for_plot)
+    df_strategies.to_excel(os.path.join(log_output_dir, "equal_weighted_vs_drl_performance.xlsx"))
+    print("Equal weighted vs drl performance saved to equal_weighted_vs_drl_performance.xlsx")
+
     # 4. Plot Comparative Equity Curves
     print("\n--- Plotting Comparative Equity Curves ---")
     plot_comparative_equity_curves(
@@ -1094,6 +1117,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
