@@ -11,10 +11,8 @@ from src.drl_agent import PPOAgent
 from src.spo_layer import DifferentiableMVO
 from src.spo_loss import SPOPlusLoss
 
-import matplotlib
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import yfinance as yf
+# import quantstats as qs # Removed
+# import yfinance as yf # Removed
 
 csv_files_headers = {}
 csv_loggers_paths = {}
@@ -206,13 +204,68 @@ def plot_performance(portfolio_values, title="Portfolio Performance", metrics=No
     plt.close(fig)
 
 
+def plot_portfolio_weights_evolution(dates, weights_history, etf_tickers, output_dir):
+    """
+    Plots the evolution of portfolio weights over time as a stacked area chart.
+
+    Args:
+        dates (list or pd.Series): List or Pandas Series of datetime objects for the x-axis.
+        weights_history (list): A list of numpy arrays, where each array contains the
+                                portfolio weights (including cash at the last position)
+                                for a given date.
+        etf_tickers (list): A list of strings representing the ETF tickers.
+        output_dir (str): The directory path where the plot image will be saved.
+    """
+    if not weights_history:
+        print("Warning: weights_history is empty. Cannot plot portfolio weights evolution.")
+        return
+
+    if not dates or len(dates) != len(weights_history):
+        print("Warning: Dates are missing or mismatch with weights_history length. Cannot plot.")
+        return
+
+    # Prepare column names: ETF tickers + 'Cash'
+    column_names = etf_tickers + ['Cash']
+
+    # Convert weights_history to DataFrame
+    weights_df = pd.DataFrame(weights_history, columns=column_names)
+    weights_df.index = pd.to_datetime(dates)
+
+    # Create the stacked area plot
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # Use matplotlib's stackplot
+    ax.stackplot(weights_df.index, weights_df.T.values, labels=weights_df.columns, alpha=0.8)
+
+    ax.set_title('Portfolio Weights Evolution Over Time')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Portfolio Weight')
+    ax.legend(loc='upper left')
+    ax.grid(True)
+
+    # Set y-axis limits
+    ax.set_ylim(0, 1)
+
+    # Format x-axis date labels
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+    fig.autofmt_xdate()
+
+    # Save the plot
+    plot_filename = os.path.join(output_dir, "portfolio_weights_evolution.png")
+    try:
+        plt.savefig(plot_filename)
+        print(f"Portfolio weights evolution plot saved to {plot_filename}")
+    except Exception as e:
+        print(f"Error saving portfolio weights evolution plot: {e}")
+    plt.close(fig)
+
 
 def main():
     global log_output_dir
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    TRAIN_TEST_CUTOFF_DATE = '2023-01-01'
+    TRAIN_TEST_CUTOFF_DATE = '2022-01-01'
 
     # --- Parameters ---
     data_path_prefix = 'data/'
@@ -228,7 +281,7 @@ def main():
     spo_plus_loss_coeff = 1.0
     mvo_max_weight_per_asset = 0.25
 
-    max_episodes = 80
+    max_episodes = 200
     max_timesteps_per_episode = 40
     update_timestep_threshold = 40
     
@@ -458,37 +511,38 @@ def main():
         print(f"Error loading model for backtesting: {e}. Ensure the model path is correct and compatible.")
         return
 
-    print("Fetching benchmark data for backtest period...")
-    benchmark_series = None # Initialize to None
-    if not backtest_env.dates.empty:
-        benchmark_ticker = "SPY" # Example benchmark
-        try:
-            # Ensure dates are in a format yfinance accepts (e.g., YYYY-MM-DD strings)
-            start_date_str = pd.to_datetime(backtest_env.dates[0]).strftime('%Y-%m-%d')
-            end_date_str = pd.to_datetime(backtest_env.dates[-1]).strftime('%Y-%m-%d')
-
-            spy_data = yf.download(benchmark_ticker, start=start_date_str, end=end_date_str, progress=False, auto_adjust=True) # Use auto_adjust for simplicity
-            if not spy_data.empty and 'Close' in spy_data:
-                # Ensure benchmark_series has a DatetimeIndex
-                benchmark_series_temp = spy_data['Close'].pct_change().dropna()
-                benchmark_series_temp.index = pd.to_datetime(benchmark_series_temp.index)
-
-                benchmark_series = benchmark_series_temp
-                print(f"Benchmark data ({benchmark_ticker}) loaded successfully for {len(benchmark_series)} periods.")
-            else:
-                print(f"Warning: Could not download or process benchmark data for {benchmark_ticker}. Proceeding without benchmark.")
-        except Exception as e:
-            print(f"Error downloading benchmark data for {benchmark_ticker}: {e}. Proceeding without benchmark.")
-    else:
-        print("Warning: Backtest dates are empty. Cannot fetch benchmark data.")
+    # print("Fetching benchmark data for backtest period...") # Removed
+    # benchmark_series = None # Initialize to None # Removed
+    # if not backtest_env.dates.empty: # Removed
+    #     benchmark_ticker = "SPY" # Example benchmark # Removed
+    #     try: # Removed
+    #         # Ensure dates are in a format yfinance accepts (e.g., YYYY-MM-DD strings) # Removed
+    #         start_date_str = pd.to_datetime(backtest_env.dates[0]).strftime('%Y-%m-%d') # Removed
+    #         end_date_str = pd.to_datetime(backtest_env.dates[-1]).strftime('%Y-%m-%d') # Removed
+    # # Removed
+    #         spy_data = yf.download(benchmark_ticker, start=start_date_str, end=end_date_str, progress=False, auto_adjust=True) # Use auto_adjust for simplicity # Removed
+    #         if not spy_data.empty and 'Close' in spy_data: # Removed
+    #             # Ensure benchmark_series has a DatetimeIndex # Removed
+    #             benchmark_series_temp = spy_data['Close'].pct_change().dropna() # Removed
+    #             benchmark_series_temp.index = pd.to_datetime(benchmark_series_temp.index) # Removed
+    # # Removed
+    #             benchmark_series = benchmark_series_temp # Removed
+    #             print(f"Benchmark data ({benchmark_ticker}) loaded successfully for {len(benchmark_series)} periods.") # Removed
+    #         else: # Removed
+    #             print(f"Warning: Could not download or process benchmark data for {benchmark_ticker}. Proceeding without benchmark.") # Removed
+    #     except Exception as e: # Removed
+    #         print(f"Error downloading benchmark data for {benchmark_ticker}: {e}. Proceeding without benchmark.") # Removed
+    # else: # Removed
+    #     print("Warning: Backtest dates are empty. Cannot fetch benchmark data.") # Removed
 
     print("Starting backtest loop...")
     backtest_portfolio_values = []
     backtest_dates = []
+    backtest_portfolio_weights_over_time = [] # Initialize list to store weights
 
     state = backtest_env.reset_for_backtest()
     backtest_portfolio_values.append(backtest_env.current_portfolio_value)
-    backtest_dates.append(pd.to_datetime(backtest_env.current_date))
+    backtest_dates.append(pd.to_datetime(backtest_env.current_date)) # Restored: Initial date for N+1 elements
 
     while True:
         # Get Rolling Covariance for Backtest Step
@@ -516,6 +570,7 @@ def main():
         backtest_action_weights_np = backtest_action_weights_tensor.cpu().numpy().flatten()
         
         next_state, reward, done, info = backtest_env.step(backtest_action_weights_np)
+        backtest_portfolio_weights_over_time.append(backtest_env.current_weights) # Store weights
 
         backtest_portfolio_values.append(backtest_env.current_portfolio_value)
         current_date_info = info.get('current_date', backtest_env.current_date)
@@ -553,105 +608,103 @@ def main():
                      metrics=backtest_performance_metrics,
                      dates=pv_series_backtest.index.tolist())
 
-    print("\n--- Generating Pyfolio Report ---")
-    if not isinstance(pv_series_backtest.index, pd.DatetimeIndex):
-        pv_series_backtest.index = pd.to_datetime(pv_series_backtest.index)
+    # print("\n--- Generating QuantStats Report ---") # Removed
+    # if not isinstance(pv_series_backtest.index, pd.DatetimeIndex): # Removed
+    #     pv_series_backtest.index = pd.to_datetime(pv_series_backtest.index) # Removed
+    # # Removed
+    # if pv_series_backtest.index.tz is not None: # Removed
+    #     pv_series_backtest.index = pv_series_backtest.index.tz_localize(None) # Removed
+    # # Removed
+    # backtest_returns_for_qs = pv_series_backtest.pct_change().dropna() # Removed
+    # # Removed
+    # skip_quantstats_report = False # Removed
+    # if backtest_returns_for_qs.empty: # Removed
+    #     print("Warning: Initial backtest returns are empty. Skipping QuantStats report.") # Removed
+    #     skip_quantstats_report = True # Removed
+    # else: # Removed
+    #     # benchmark_series variable is defined if benchmark data fetching was successful # Removed
+    #     # We need to ensure benchmark_series is defined for the following block, # Removed
+    #     # or guard its usage. For simplicity, we assume it might be None if fetching failed. # Removed
+    #     if 'benchmark_series' in locals() and benchmark_series is not None and not benchmark_series.empty: # Removed
+    #         if not isinstance(benchmark_series.index, pd.DatetimeIndex): # Should be, but double check # Removed
+    #             benchmark_series.index = pd.to_datetime(benchmark_series.index) # Removed
+    #         if benchmark_series.index.tz is not None: # Should be, but double check # Removed
+    #             benchmark_series.index = benchmark_series.index.tz_localize(None) # Removed
+    # # Removed
+    #         common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index) # Removed
+    # # Removed
+    #         if common_index.empty: # Removed
+    #             print("Warning: No common dates between backtest returns and benchmark returns. Proceeding without benchmark for QuantStats.") # Removed
+    #             benchmark_series = None # Removed
+    #         else: # Removed
+    #             backtest_returns_for_qs = backtest_returns_for_qs.loc[common_index] # Removed
+    #             benchmark_series = benchmark_series.loc[common_index] # Removed
+    # # Removed
+    #             backtest_returns_for_qs.dropna(inplace=True) # Removed
+    #             if benchmark_series is not None: # Removed
+    #                 benchmark_series.dropna(inplace=True) # Removed
+    # # Removed
+    #             if benchmark_series is not None and not benchmark_series.empty and not backtest_returns_for_qs.empty: # Removed
+    #                 final_common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index) # Removed
+    # # Removed
+    #                 if final_common_index.empty: # Removed
+    #                     print("Warning: Returns or benchmark became empty after NaN removal post-alignment. Proceeding without benchmark or skipping report.") # Removed
+    #                     benchmark_series = None # Removed
+    #                     if backtest_returns_for_qs.loc[final_common_index].empty: # Removed
+    #                          backtest_returns_for_qs = pd.Series([], dtype='float64') # Removed
+    #                 else: # Removed
+    #                     backtest_returns_for_qs = backtest_returns_for_qs.loc[final_common_index] # Removed
+    #                     benchmark_series = benchmark_series.loc[final_common_index] # Removed
+    #             elif backtest_returns_for_qs.empty: # Removed
+    #                  print("Warning: Backtest returns became empty after NaN removal post-alignment.") # Removed
+    #             elif benchmark_series is not None and benchmark_series.empty: # Removed
+    #                  print("Warning: Benchmark series became empty after NaN removal. Proceeding without benchmark.") # Removed
+    #                  benchmark_series = None # Removed
+    # # Removed
+    #     if backtest_returns_for_qs.empty: # Removed
+    #         if not skip_quantstats_report: # Removed
+    #              print("Skipping QuantStats report as backtest returns are empty after all processing.") # Removed
+    #         skip_quantstats_report = True # Removed
+    # # Removed
+    # if not skip_quantstats_report: # Removed
+    #     quantstats_report_path = os.path.join(log_output_dir, 'QuantStats_Report.html') # Removed
+    #     try: # Removed
+    #         qs.reports.html( # Removed
+    #             backtest_returns_for_qs, # Removed
+    #             benchmark=benchmark_series if 'benchmark_series' in locals() and benchmark_series is not None and not benchmark_series.empty else None, # Removed
+    #             output=quantstats_report_path, # Removed
+    #             title='DRL Agent Backtest Performance', # Removed
+    #             download_filename=os.path.join(log_output_dir, 'QuantStats_Download.html') # Removed
+    #         ) # Removed
+    #         print(f"QuantStats report saved to {quantstats_report_path}") # Removed
+    #     except Exception as e: # Removed
+    #         print(f"Error generating QuantStats report: {e}") # Removed
+    #         import traceback # Removed
+    #         traceback.print_exc() # Removed
+    # else: # Removed
+    #     print("QuantStats report generation skipped due to empty or problematic returns data.") # Removed
 
-    if pv_series_backtest.index.tz is not None:
-        pv_series_backtest.index = pv_series_backtest.index.tz_localize(None)
-
-    backtest_returns_for_qs = pv_series_backtest.pct_change().dropna()
-
-    skip_pyfolio_report = False
-    if backtest_returns_for_qs.empty:
-        print("Warning: Initial backtest returns are empty. Skipping Pyfolio report.")
-        skip_pyfolio_report = True
+    print("\n--- Plotting Portfolio Weights Evolution ---")
+    # Get ETF tickers for the legend
+    # Ensure backtest_env and its attributes are accessible here
+    if 'backtest_env' in locals() and hasattr(backtest_env, 'chosen_etf_prices') and backtest_env.chosen_etf_prices is not None:
+        etf_names_for_plot = backtest_env.chosen_etf_prices.columns.tolist()
     else:
-        if benchmark_series is not None and not benchmark_series.empty:
-            if not isinstance(benchmark_series.index, pd.DatetimeIndex): # Should be, but double check
-                benchmark_series.index = pd.to_datetime(benchmark_series.index)
-            if benchmark_series.index.tz is not None: # Should be, but double check
-                benchmark_series.index = benchmark_series.index.tz_localize(None)
+        print("Warning: Could not retrieve ETF names for plotting portfolio weights. Using generic names.")
+        # Attempt to infer number of assets from weights_history if possible, otherwise provide a sensible default or skip
+        if backtest_portfolio_weights_over_time and len(backtest_portfolio_weights_over_time[0]) > 1:
+            num_assets = len(backtest_portfolio_weights_over_time[0]) - 1 # Subtract cash
+            etf_names_for_plot = [f'Asset_{i+1}' for i in range(num_assets)]
+        else:
+            etf_names_for_plot = [] # Will likely cause legend issues but avoids crash
 
-            common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index)
-
-            if common_index.empty:
-                print("Warning: No common dates between backtest returns and benchmark returns. Proceeding without benchmark for Pyfolio.")
-                benchmark_series = None
-            else:
-                backtest_returns_for_qs = backtest_returns_for_qs.loc[common_index]
-                benchmark_series = benchmark_series.loc[common_index]
-
-                backtest_returns_for_qs.dropna(inplace=True)
-                if benchmark_series is not None:
-                    benchmark_series.dropna(inplace=True)
-
-                if benchmark_series is not None and not benchmark_series.empty and not backtest_returns_for_qs.empty:
-                    final_common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index)
-
-                    if final_common_index.empty:
-                        print("Warning: Returns or benchmark became empty after NaN removal post-alignment. Proceeding without benchmark or skipping report.")
-                        benchmark_series = None
-                        if backtest_returns_for_qs.loc[final_common_index].empty:
-                             backtest_returns_for_qs = pd.Series([], dtype='float64')
-                    else:
-                        backtest_returns_for_qs = backtest_returns_for_qs.loc[final_common_index]
-                        benchmark_series = benchmark_series.loc[final_common_index]
-                elif backtest_returns_for_qs.empty:
-                     print("Warning: Backtest returns became empty after NaN removal post-alignment.")
-                elif benchmark_series is not None and benchmark_series.empty:
-                     print("Warning: Benchmark series became empty after NaN removal. Proceeding without benchmark.")
-                     benchmark_series = None
-
-        if backtest_returns_for_qs.empty:
-            if not skip_pyfolio_report:
-                 print("Skipping Pyfolio report as backtest returns are empty after all processing.")
-            skip_pyfolio_report = True
-
-    if not skip_pyfolio_report:
-        pyfolio_report_output_path = os.path.join(log_output_dir, 'Pyfolio_Tear_Sheet.pdf')
-        try:
-            print(f"Generating Pyfolio tear sheet. Returns length: {len(backtest_returns_for_qs)}")
-            if benchmark_series is not None and not benchmark_series.empty:
-                print(f"Benchmark length: {len(benchmark_series)}")
-
-            returns_for_pyfolio = backtest_returns_for_qs.copy()
-            if not isinstance(returns_for_pyfolio.index, pd.DatetimeIndex):
-                raise ValueError("Returns index must be DatetimeIndex for Pyfolio.")
-            returns_for_pyfolio.index.name = 'date'
-
-            benchmark_rets_for_pyfolio = None
-            if benchmark_series is not None and not benchmark_series.empty:
-                benchmark_rets_for_pyfolio = benchmark_series.copy()
-                if not isinstance(benchmark_rets_for_pyfolio.index, pd.DatetimeIndex):
-                     raise ValueError("Benchmark returns index must be DatetimeIndex for Pyfolio.")
-                benchmark_rets_for_pyfolio.index.name = 'date'
-
-            original_backend = matplotlib.get_backend()
-            matplotlib.use('Agg') 
-
-            # with PdfPages(pyfolio_report_output_path) as pdf:
-            #     plt.close('all')
-            #     pf.create_full_tear_sheet(
-            #         returns_for_pyfolio,
-            #         benchmark_rets=benchmark_rets_for_pyfolio,
-            #         round_trips=False 
-            #     )
-            #     for i in plt.get_fignums():
-            #         pdf.savefig(plt.figure(i))
-            #     plt.close('all')
-
-            matplotlib.use(original_backend)
-            print(f"Pyfolio tear sheet saved to {pyfolio_report_output_path}")
-
-        except Exception as e:
-            print(f"Error generating Pyfolio report: {e}")
-            import traceback
-            traceback.print_exc()
-            if matplotlib.get_backend().lower() != original_backend.lower(): # Check if backend changed before restoring
-                matplotlib.use(original_backend)
-    else:
-        print("Pyfolio report generation skipped due to empty or problematic returns data.")
+    # Call the new plotting function for portfolio weights
+    plot_portfolio_weights_evolution(
+        dates=backtest_dates[1:], # Pass a slice of the dates (N elements)
+        weights_history=backtest_portfolio_weights_over_time,
+        etf_tickers=etf_names_for_plot,
+        output_dir=log_output_dir
+    )
 
     # --- Training Curves Plot (remains) ---
     fig_train, ax_train = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
@@ -676,3 +729,12 @@ if __name__ == '__main__':
     main()
 
 
+
+
+# Total Return: 0.0332
+# Annualized Volatility: 0.0517
+# Sharpe Ratio: 1.6346
+# Max Drawdown: -0.0240
+# Sortino Ratio: 2.0084
+
+# those are my metrics for now bro
