@@ -111,7 +111,7 @@ def get_etf_universe_affinity_propagation(etf_prices_full_df, start_date_affinit
         traceback.print_exc()
         return fallback_tickers if fallback_tickers else []
 
-def load_all_data(data_path_prefix=""):
+def load_all_data(data_path_prefix="", start_date=None, end_date=None):
     etf_summary_path = os.path.join(data_path_prefix, "ETF_Summary.xlsx")
     us_econ_data_path = os.path.join(data_path_prefix, "US_Economic_Data.xlsx")
     us_rates_path = os.path.join(data_path_prefix, "US Rates.xlsx")
@@ -284,9 +284,12 @@ def load_all_data(data_path_prefix=""):
     etf_prices_full_df.ffill(inplace=True); etf_prices_full_df.bfill(inplace=True)
     etf_volume_full_df.ffill(inplace=True); etf_volume_full_df.bfill(inplace=True)
 
-    adjusted_start_date = '2010-01-01'
-    etf_prices_full_df = etf_prices_full_df.loc[adjusted_start_date:]
-    etf_volume_full_df = etf_volume_full_df.loc[adjusted_start_date:]
+    if start_date:
+        etf_prices_full_df = etf_prices_full_df.loc[start_date:]
+        etf_volume_full_df = etf_volume_full_df.loc[start_date:]
+    if end_date:
+        etf_prices_full_df = etf_prices_full_df.loc[:end_date]
+        etf_volume_full_df = etf_volume_full_df.loc[:end_date]
 
     selected_etf_tickers = get_etf_universe_affinity_propagation(
         etf_prices_full_df.copy(),
@@ -321,6 +324,17 @@ def load_all_data(data_path_prefix=""):
         short_int_df_raw = read_columns_and_clean(etf_summary_path, "SHORT_INT", chosen_tickers_from_selection, skiprows=skip_rows_etf_summary)
         iv_1m_atm_df_raw = read_columns_and_clean(etf_summary_path, "1M_50D", chosen_tickers_from_selection, skiprows=skip_rows_etf_summary)
 
+        if start_date:
+            if not market_cap_df_raw.empty: market_cap_df_raw = market_cap_df_raw.loc[start_date:]
+            if not put_call_df_raw.empty: put_call_df_raw = put_call_df_raw.loc[start_date:]
+            if not short_int_df_raw.empty: short_int_df_raw = short_int_df_raw.loc[start_date:]
+            if not iv_1m_atm_df_raw.empty: iv_1m_atm_df_raw = iv_1m_atm_df_raw.loc[start_date:]
+        if end_date:
+            if not market_cap_df_raw.empty: market_cap_df_raw = market_cap_df_raw.loc[:end_date]
+            if not put_call_df_raw.empty: put_call_df_raw = put_call_df_raw.loc[:end_date]
+            if not short_int_df_raw.empty: short_int_df_raw = short_int_df_raw.loc[:end_date]
+            if not iv_1m_atm_df_raw.empty: iv_1m_atm_df_raw = iv_1m_atm_df_raw.loc[:end_date]
+
         base_index = chosen_etf_prices_df.index
         market_cap_df = market_cap_df_raw.reindex(base_index).ffill()
         put_call_df = put_call_df_raw.reindex(base_index).ffill()
@@ -340,9 +354,16 @@ def load_all_data(data_path_prefix=""):
 
     try:
         actual_release_df_full = read_columns_and_clean(us_econ_data_path, "Actual", index_col=0, skiprows=skip_rows_econ)
-        actual_release_df = actual_release_df_full[econ_vars_to_transform].copy() if not actual_release_df_full.empty else pd.DataFrame()
-
         release_date_df_raw_full = read_columns_and_clean(us_econ_data_path, "ReleaseDate", index_col=0, skiprows=skip_rows_econ)
+
+        if start_date:
+            if not actual_release_df_full.empty: actual_release_df_full = actual_release_df_full.loc[start_date:]
+            if not release_date_df_raw_full.empty: release_date_df_raw_full = release_date_df_raw_full.loc[start_date:]
+        if end_date:
+            if not actual_release_df_full.empty: actual_release_df_full = actual_release_df_full.loc[:end_date]
+            if not release_date_df_raw_full.empty: release_date_df_raw_full = release_date_df_raw_full.loc[:end_date]
+
+        actual_release_df = actual_release_df_full[econ_vars_to_transform].copy() if not actual_release_df_full.empty else pd.DataFrame()
         release_date_df_raw = release_date_df_raw_full[econ_vars_to_transform].copy() if not release_date_df_raw_full.empty else pd.DataFrame()
 
         release_date_df = convert_float_columns_to_datetime_user_provided(release_date_df_raw.copy())
@@ -379,6 +400,10 @@ def load_all_data(data_path_prefix=""):
 
     try:
         us_rates_df_full = pd.read_excel(us_rates_path, index_col=0)
+        if start_date:
+            if not us_rates_df_full.empty: us_rates_df_full = us_rates_df_full.loc[start_date:]
+        if end_date:
+            if not us_rates_df_full.empty: us_rates_df_full = us_rates_df_full.loc[:end_date:]
         base_rate_columns = ['DGS10', 'DGS2', 'DGS1', 'DGS3MO']
         actual_base_rate_columns = [col for col in base_rate_columns if col in us_rates_df_full.columns]
         us_rates_df = us_rates_df_full[actual_base_rate_columns].copy()

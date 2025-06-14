@@ -118,6 +118,23 @@ class PortfolioEnv(gym.Env):
         self.current_portfolio_value = self.initial_investment
         self.current_weights = np.zeros(self.n_etfs + 1)
         self.current_weights[self.n_etfs] = 1.0
+        self.current_date = self.dates[self.current_step]
+        return self._get_observation()
+
+    def reset_for_backtest(self):
+        self.current_step = 0
+        self.current_portfolio_value = self.initial_investment
+        self.current_weights = np.zeros(self.n_etfs + 1)
+        self.current_weights[self.n_etfs] = 1.0  # Start with 100% cash
+        self.current_date = self.dates[self.current_step]
+        return self._get_observation()
+
+    def reset_for_eval(self):
+        self.current_step = 0
+        self.current_portfolio_value = self.initial_investment
+        self.current_weights = np.zeros(self.n_etfs + 1)
+        self.current_weights[self.n_etfs] = 1.0  # Start with 100% cash
+        self.current_date = self.dates[self.current_step]
         return self._get_observation()
 
     def step(self, action):
@@ -167,6 +184,11 @@ class PortfolioEnv(gym.Env):
         self.current_weights = new_weights
         self.current_step += 1
 
+        if self.current_step >= len(self.dates):
+            done = True
+        elif self.current_step < len(self.dates):
+            self.current_date = self.dates[self.current_step]
+
         if self.current_step >= len(self.dates) -1 :
             done = True
 
@@ -193,8 +215,10 @@ class PortfolioEnv(gym.Env):
                 ordered_true_fwd_returns[i] = np.nan
 
 
-        info_dict = {'true_forward_returns': ordered_true_fwd_returns}
-
+        info_dict = {
+            'true_forward_returns': ordered_true_fwd_returns,
+            'current_date': current_date
+        }
         return obs, reward, done, info_dict
 
     def render(self, mode='human', close=False):
