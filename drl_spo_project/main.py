@@ -546,7 +546,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    TRAIN_TEST_CUTOFF_DATE = '2021-01-01'
+    TRAIN_TEST_CUTOFF_DATE = '2023-01-01'
 
     # --- Parameters ---
     data_path_prefix = 'data/'
