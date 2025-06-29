@@ -796,30 +796,6 @@ def main():
         print(f"Error loading model for backtesting: {e}. Ensure the model path is correct and compatible.")
         return
 
-    # print("Fetching benchmark data for backtest period...") # Removed
-    # benchmark_series = None # Initialize to None # Removed
-    # if not backtest_env.dates.empty: # Removed
-    #     benchmark_ticker = "SPY" # Example benchmark # Removed
-    #     try: # Removed
-    #         # Ensure dates are in a format yfinance accepts (e.g., YYYY-MM-DD strings) # Removed
-    #         start_date_str = pd.to_datetime(backtest_env.dates[0]).strftime('%Y-%m-%d') # Removed
-    #         end_date_str = pd.to_datetime(backtest_env.dates[-1]).strftime('%Y-%m-%d') # Removed
-    # # Removed
-    #         spy_data = yf.download(benchmark_ticker, start=start_date_str, end=end_date_str, progress=False, auto_adjust=True) # Use auto_adjust for simplicity # Removed
-    #         if not spy_data.empty and 'Close' in spy_data: # Removed
-    #             # Ensure benchmark_series has a DatetimeIndex # Removed
-    #             benchmark_series_temp = spy_data['Close'].pct_change().dropna() # Removed
-    #             benchmark_series_temp.index = pd.to_datetime(benchmark_series_temp.index) # Removed
-    # # Removed
-    #             benchmark_series = benchmark_series_temp # Removed
-    #             print(f"Benchmark data ({benchmark_ticker}) loaded successfully for {len(benchmark_series)} periods.") # Removed
-    #         else: # Removed
-    #             print(f"Warning: Could not download or process benchmark data for {benchmark_ticker}. Proceeding without benchmark.") # Removed
-    #     except Exception as e: # Removed
-    #         print(f"Error downloading benchmark data for {benchmark_ticker}: {e}. Proceeding without benchmark.") # Removed
-    # else: # Removed
-    #     print("Warning: Backtest dates are empty. Cannot fetch benchmark data.") # Removed
-
     print("Starting backtest loop...")
     backtest_portfolio_values = []
     backtest_dates = []
@@ -903,82 +879,6 @@ def main():
     # Save the dataframe used to create the backtest plot
     pv_series_backtest.to_excel(os.path.join(log_output_dir, "backtest_portfolio_values.xlsx"))
     print("Backtest portfolio values saved to backtest_portfolio_values.xlsx")
-
-    # print("\n--- Generating QuantStats Report ---") # Removed
-    # if not isinstance(pv_series_backtest.index, pd.DatetimeIndex): # Removed
-    #     pv_series_backtest.index = pd.to_datetime(pv_series_backtest.index) # Removed
-    # # Removed
-    # if pv_series_backtest.index.tz is not None: # Removed
-    #     pv_series_backtest.index = pv_series_backtest.index.tz_localize(None) # Removed
-    # # Removed
-    # backtest_returns_for_qs = pv_series_backtest.pct_change().dropna() # Removed
-    # # Removed
-    # skip_quantstats_report = False # Removed
-    # if backtest_returns_for_qs.empty: # Removed
-    #     print("Warning: Initial backtest returns are empty. Skipping QuantStats report.") # Removed
-    #     skip_quantstats_report = True # Removed
-    # else: # Removed
-    #     # benchmark_series variable is defined if benchmark data fetching was successful # Removed
-    #     # We need to ensure benchmark_series is defined for the following block, # Removed
-    #     # or guard its usage. For simplicity, we assume it might be None if fetching failed. # Removed
-    #     if 'benchmark_series' in locals() and benchmark_series is not None and not benchmark_series.empty: # Removed
-    #         if not isinstance(benchmark_series.index, pd.DatetimeIndex): # Should be, but double check # Removed
-    #             benchmark_series.index = pd.to_datetime(benchmark_series.index) # Removed
-    #         if benchmark_series.index.tz is not None: # Should be, but double check # Removed
-    #             benchmark_series.index = benchmark_series.index.tz_localize(None) # Removed
-    # # Removed
-    #         common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index) # Removed
-    # # Removed
-    #         if common_index.empty: # Removed
-    #             print("Warning: No common dates between backtest returns and benchmark returns. Proceeding without benchmark for QuantStats.") # Removed
-    #             benchmark_series = None # Removed
-    #         else: # Removed
-    #             backtest_returns_for_qs = backtest_returns_for_qs.loc[common_index] # Removed
-    #             benchmark_series = benchmark_series.loc[common_index] # Removed
-    # # Removed
-    #             backtest_returns_for_qs.dropna(inplace=True) # Removed
-    #             if benchmark_series is not None: # Removed
-    #                 benchmark_series.dropna(inplace=True) # Removed
-    # # Removed
-    #             if benchmark_series is not None and not benchmark_series.empty and not backtest_returns_for_qs.empty: # Removed
-    #                 final_common_index = backtest_returns_for_qs.index.intersection(benchmark_series.index) # Removed
-    # # Removed
-    #                 if final_common_index.empty: # Removed
-    #                     print("Warning: Returns or benchmark became empty after NaN removal post-alignment. Proceeding without benchmark or skipping report.") # Removed
-    #                     benchmark_series = None # Removed
-    #                     if backtest_returns_for_qs.loc[final_common_index].empty: # Removed
-    #                          backtest_returns_for_qs = pd.Series([], dtype='float64') # Removed
-    #                 else: # Removed
-    #                     backtest_returns_for_qs = backtest_returns_for_qs.loc[final_common_index] # Removed
-    #                     benchmark_series = benchmark_series.loc[final_common_index] # Removed
-    #             elif backtest_returns_for_qs.empty: # Removed
-    #                  print("Warning: Backtest returns became empty after NaN removal post-alignment.") # Removed
-    #             elif benchmark_series is not None and benchmark_series.empty: # Removed
-    #                  print("Warning: Benchmark series became empty after NaN removal. Proceeding without benchmark.") # Removed
-    #                  benchmark_series = None # Removed
-    # # Removed
-    #     if backtest_returns_for_qs.empty: # Removed
-    #         if not skip_quantstats_report: # Removed
-    #              print("Skipping QuantStats report as backtest returns are empty after all processing.") # Removed
-    #         skip_quantstats_report = True # Removed
-    # # Removed
-    # if not skip_quantstats_report: # Removed
-    #     quantstats_report_path = os.path.join(log_output_dir, 'QuantStats_Report.html') # Removed
-    #     try: # Removed
-    #         qs.reports.html( # Removed
-    #             backtest_returns_for_qs, # Removed
-    #             benchmark=benchmark_series if 'benchmark_series' in locals() and benchmark_series is not None and not benchmark_series.empty else None, # Removed
-    #             output=quantstats_report_path, # Removed
-    #             title='DRL Agent Backtest Performance', # Removed
-    #             download_filename=os.path.join(log_output_dir, 'QuantStats_Download.html') # Removed
-    #         ) # Removed
-    #         print(f"QuantStats report saved to {quantstats_report_path}") # Removed
-    #     except Exception as e: # Removed
-    #         print(f"Error generating QuantStats report: {e}") # Removed
-    #         import traceback # Removed
-    #         traceback.print_exc() # Removed
-    # else: # Removed
-    #     print("QuantStats report generation skipped due to empty or problematic returns data.") # Removed
 
     print("\n--- Plotting Portfolio Weights Evolution ---")
     # Get ETF tickers for the legend
