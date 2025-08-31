@@ -12,34 +12,40 @@ from cvxpylayers.torch import CvxpyLayer
 import cvxpy.error
 
 class DifferentiableMVO(nn.Module):
-    def __init__(self, num_assets, max_weight_per_asset=1.0):
+    def __init__(self, num_assets, max_weight_per_asset=1.0, kappa=0.0):
         """
         """
         super(DifferentiableMVO, self).__init__()
         self.num_assets = num_assets
         self.max_weight_per_asset = max_weight_per_asset
+        self.kappa = kappa
 
         y_cvx = cp.Variable(num_assets, name="y_decision_var")
+        t_cvx = cp.Variable(name="t_decision_var") # Auxiliary variable for SOCP
         mu_cvx_param = cp.Parameter(num_assets, name="expected_returns_param")
         L_transpose_param = cp.Parameter((num_assets, num_assets), name="cov_L_transpose_param")
+        kappa_param = cp.Parameter(name="kappa_param") # Kappa parameter for robust optimization
 
-        objective = cp.Minimize(0.5 * cp.sum_squares(L_transpose_param @ y_cvx))
-        constraints = [(mu_cvx_param @ y_cvx) == 1, y_cvx >= 0]
+        # Robust objective: maximize mu_hat^T y - kappa * ||L^T y||_2
+        # This is equivalent to maximizing mu_hat^T y - kappa * t, subject to t >= ||L^T y||_2
+        objective = cp.Maximize(mu_cvx_param @ y_cvx - kappa_param * t_cvx)
+        constraints = [cp.sum(y_cvx) == 1, y_cvx >= 0] # Budget and no short-selling constraints
+        constraints.append(cp.norm(L_transpose_param @ y_cvx, 2) <= t_cvx) # Second-order cone constraint
 
         if self.max_weight_per_asset < 1.0:
-            constraints.append(y_cvx <= self.max_weight_per_asset * cp.sum(y_cvx))
+            constraints.append(y_cvx <= self.max_weight_per_asset) # Max weight per asset constraint
 
         problem = cp.Problem(objective, constraints)
-        self.cvxpylayer = CvxpyLayer(problem, parameters=[L_transpose_param, mu_cvx_param], variables=[y_cvx])
+        self.cvxpylayer = CvxpyLayer(problem, parameters=[L_transpose_param, mu_cvx_param, kappa_param], variables=[y_cvx, t_cvx])
 
-        print(f"DifferentiableMVO layer initialized for Max Sharpe (num_assets={num_assets}).")
-        print(f"Objective: Minimize 0.5 * sum_squares(L_transpose @ y), s.t. mu^T y = 1, y >= 0")
+        print(f"DifferentiableMVO layer initialized for Robust Portfolio Optimization (num_assets={num_assets}, kappa={kappa}).")
+        print(f"Objective: Maximize mu_hat^T y - kappa * t, s.t. Sum(y) = 1, y >= 0, t >= ||L^T y||_2")
         if self.max_weight_per_asset < 1.0:
-            print(f"Constraint: y_i <= {self.max_weight_per_asset} * sum(y_j) also included.")
-        print("Output 'y' will be normalized to get weights 'w = y / sum(y)'.")
+            print(f"Constraint: y_i <= {self.max_weight_per_asset} also included.")
+        print("Output 'y' will be the portfolio weights 'w'.")
 
 
-    def forward(self, predicted_returns, covariance_matrix):
+    def forward(self, predicted_returns, covariance_matrix, kappa=None):
         """
         """
         if predicted_returns.ndim == 1:
@@ -52,6 +58,8 @@ class DifferentiableMVO(nn.Module):
         final_weights_list = []
         
         DEBUG_MVO_LAYER = False
+
+        current_kappa = self.kappa if kappa is None else kappa
 
         for i in range(batch_size):
             mu_i = predicted_returns[i]
@@ -67,8 +75,8 @@ class DifferentiableMVO(nn.Module):
                     L_i_transpose = L_i.T.contiguous()
 
                     solver_verbose = False
-                    y_solution_tuple = self.cvxpylayer(
-                        L_i_transpose, mu_i,
+                    y_solution_tuple, t_solution_tuple = self.cvxpylayer(
+                        L_i_transpose, mu_i, torch.tensor(current_kappa, device=mu_i.device, dtype=mu_i.dtype),
                         solver_args={'verbose': solver_verbose,
                                      'solve_method': 'ECOS',
                                      'max_iters': 10000,
@@ -76,7 +84,7 @@ class DifferentiableMVO(nn.Module):
                                      'abstol': 1e-8,
                                      'reltol': 1e-8}
                     )
-                    y_candidate = y_solution_tuple[0]
+                    y_candidate = y_solution_tuple
 
                     if torch.isnan(y_candidate).any() or torch.isinf(y_candidate).any():
                         if DEBUG_MVO_LAYER:

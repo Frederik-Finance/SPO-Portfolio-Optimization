@@ -107,7 +107,11 @@ class PortfolioEnv(gym.Env):
     def _get_observation(self):
         current_date = self.dates[self.current_step]
         all_features_for_date = self.full_pivot_features_for_env.loc[current_date]
-        obs = all_features_for_date[self.policy_feature_column_names].values.astype(np.float32)
+        # Create a Series with all expected policy features, filling missing with 0
+        # This handles cases where some features might be missing for a specific date
+        obs_series = pd.Series(0.0, index=self.policy_feature_column_names)
+        obs_series.update(all_features_for_date)
+        obs = obs_series.values.astype(np.float32)
         return obs
 
     def reset(self):
@@ -214,6 +218,8 @@ class PortfolioEnv(gym.Env):
                 print(f"Warning: Could not find matching forward return column for ETF ticker {ticker_col_name}")
                 ordered_true_fwd_returns[i] = np.nan
 
+        # Fill any NaN values in ordered_true_fwd_returns with 0
+        ordered_true_fwd_returns = np.nan_to_num(ordered_true_fwd_returns, nan=0.0)
 
         info_dict = {
             'true_forward_returns': ordered_true_fwd_returns,

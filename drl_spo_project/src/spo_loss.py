@@ -8,18 +8,20 @@ except ImportError:
 
 
 class SPOPlusLoss(nn.Module):
-    def __init__(self, num_assets, mvo_weight_bounds=(0,1), mvo_risk_aversion=None, mvo_target_return=None, mvo_max_weight_per_asset=1.0):
+    def __init__(self, num_assets, mvo_weight_bounds=(0,1), mvo_risk_aversion=None, mvo_target_return=None, mvo_max_weight_per_asset=1.0, kappa=0.0):
         """
         """
         super(SPOPlusLoss, self).__init__()
         self.num_assets = num_assets
+        self.kappa = kappa
         
         self.mvo_solver = DifferentiableMVO(
             num_assets=num_assets, 
-            max_weight_per_asset=mvo_max_weight_per_asset
+            max_weight_per_asset=mvo_max_weight_per_asset,
+            kappa=kappa
         )
 
-    def forward(self, predicted_returns_c_hat, true_returns_c, covariance_matrix):
+    def forward(self, predicted_returns_c_hat, true_returns_c, covariance_matrix, kappa=None):
         """
         """
         if predicted_returns_c_hat.ndim == 1:
@@ -36,14 +38,16 @@ class SPOPlusLoss(nn.Module):
             raise ValueError(f"Covariance matrix batch size {covariance_matrix.shape[0]} "
                              f"does not match predicted returns batch size {batch_size_pred} and cannot be broadcast.")
 
+        current_kappa = self.kappa if kappa is None else kappa
+
         with torch.no_grad(): 
-            w_star_c = self.mvo_solver(true_returns_c, covariance_matrix).detach()
+            w_star_c = self.mvo_solver(true_returns_c, covariance_matrix, current_kappa).detach()
 
         r_hat = predicted_returns_c_hat
         r_true = true_returns_c
 
         effective_mu_for_max_term = -r_true + 2 * r_hat
-        w_for_max_term = self.mvo_solver(effective_mu_for_max_term, covariance_matrix)
+        w_for_max_term = self.mvo_solver(effective_mu_for_max_term, covariance_matrix, current_kappa)
         max_term_val = torch.sum(effective_mu_for_max_term * w_for_max_term, dim=1)
 
         term_2_r_hat_w_star_c = -2 * torch.sum(r_hat * w_star_c, dim=1)

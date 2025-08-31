@@ -101,13 +101,14 @@ class PPOAgent:
                  spo_loss_instance: SPOPlusLoss,
                  lr_actor=0.0003, lr_critic=0.001, gamma=0.99,
                  K_epochs=80, eps_clip=0.2, action_std_init=0.6,
-                 spo_plus_loss_coeff=1.0):
+                 spo_plus_loss_coeff=1.0, kappa=0.0): # Added kappa parameter
 
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.action_dim = action_dim
         self.spo_plus_loss_coeff = spo_plus_loss_coeff
+        self.kappa = kappa # Store kappa
 
         self.mvo_solver = mvo_solver_instance
         self.spo_loss_fn = spo_loss_instance
@@ -134,11 +135,11 @@ class PPOAgent:
             "is_terminals": [], "state_values": [], "true_forward_returns": [],
             "mean_actions_for_mvo": []
         }
-    def select_action(self, state, current_covariance_matrix: torch.Tensor, is_eval=False):
+    def select_action(self, state, current_covariance_matrix: torch.Tensor, is_eval=False, kappa=None): # Added kappa parameter
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
                 sampled_action_tensor, action_logprob, state_val, positive_mean_action_tensor = self.policy_old.act(state_tensor)
-
+                
                 device = positive_mean_action_tensor.device
                 cv_matrix_tensor_for_mvo = current_covariance_matrix.to(device)
 
@@ -147,8 +148,8 @@ class PPOAgent:
                 elif cv_matrix_tensor_for_mvo.shape[0] == 1 and positive_mean_action_tensor.shape[0] > 1 :
                     cv_matrix_tensor_for_mvo = cv_matrix_tensor_for_mvo.repeat(positive_mean_action_tensor.shape[0],1,1)
 
-
-                portfolio_weights_tensor = self.mvo_solver(positive_mean_action_tensor, cv_matrix_tensor_for_mvo)
+                current_kappa = self.kappa if kappa is None else kappa
+                portfolio_weights_tensor = self.mvo_solver(positive_mean_action_tensor, cv_matrix_tensor_for_mvo, current_kappa) # Pass kappa
 
 
             if not is_eval:
@@ -171,7 +172,7 @@ class PPOAgent:
         for key in self.buffer.keys():
             self.buffer[key] = []
 
-    def update(self, current_covariance_matrix: torch.Tensor):
+    def update(self, current_covariance_matrix: torch.Tensor, kappa=None): # Added kappa parameter
         if not self.buffer['states'] or len(self.buffer['states']) < 1:
             return None
 
@@ -212,11 +213,12 @@ class PPOAgent:
             raise ValueError(f"Covariance matrix shape {current_covariance_matrix.shape} incompatible with batch size {num_samples_in_batch}")
         cv_matrix_tensor_for_loss = cv_matrix_tensor_for_loss.to(old_positive_mean_actions.device)
 
-
+        current_kappa = self.kappa if kappa is None else kappa
         actual_spo_plus_loss, spo_components = self.spo_loss_fn(
             old_positive_mean_actions,
             old_true_forward_returns,
-            cv_matrix_tensor_for_loss
+            cv_matrix_tensor_for_loss,
+            current_kappa # Pass kappa
         )
 
         total_policy_loss_agg = 0
@@ -235,9 +237,13 @@ class PPOAgent:
             policy_loss_per_sample = -torch.min(surr1, surr2)
             value_loss = self.MseLoss(state_values_eval, returns)
 
+            # Normalize SPO+ loss to prevent it from dominating other loss components
+            # Use a small epsilon to prevent division by zero if std is 0
+            normalized_spo_plus_loss = actual_spo_plus_loss / (actual_spo_plus_loss.std().detach() + 1e-8) if actual_spo_plus_loss.numel() > 1 else actual_spo_plus_loss
+
             loss = policy_loss_per_sample.mean() + \
                    0.5 * value_loss + \
-                   self.spo_plus_loss_coeff * actual_spo_plus_loss - \
+                   self.spo_plus_loss_coeff * normalized_spo_plus_loss - \
                    0.01 * dist_entropy.mean()
 
             self.optimizer.zero_grad()
@@ -288,7 +294,7 @@ if __name__ == '__main__':
                          action_dim=dummy_n_etfs,
                          mvo_solver_instance=dummy_mvo,
                          spo_loss_instance=dummy_spo_loss,
-                         spo_plus_loss_coeff=1.0)
+                         spo_plus_loss_coeff=0.01) # Adjusted coefficient for testing
         print("PPOAgent successfully instantiated with dummy MVO and SPO Loss module.")
     except Exception as e:
         print(f"Error during PPOAgent instantiation in drl_agent.py __main__: {e}")

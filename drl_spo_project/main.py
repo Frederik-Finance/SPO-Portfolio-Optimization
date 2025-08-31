@@ -561,6 +561,7 @@ def main():
     
     spo_plus_loss_coeff = 1.0
     mvo_max_weight_per_asset = 0.25
+    kappa = 0.5 # New parameter for robust optimization. Adjust as needed.
 
     max_episodes = 80
     max_timesteps_per_episode = 40
@@ -626,15 +627,16 @@ def main():
 
     # --- Agent Initialization ---
     print("Initializing MVO solver, SPO+ loss module, and DRL agent...")
-    mvo_solver = DifferentiableMVO(num_assets=action_dim, max_weight_per_asset=mvo_max_weight_per_asset).to(device)
-    spo_loss_module = SPOPlusLoss(num_assets=action_dim, mvo_max_weight_per_asset=mvo_max_weight_per_asset).to(device)
+    mvo_solver = DifferentiableMVO(num_assets=action_dim, max_weight_per_asset=mvo_max_weight_per_asset, kappa=kappa).to(device)
+    spo_loss_module = SPOPlusLoss(num_assets=action_dim, mvo_max_weight_per_asset=mvo_max_weight_per_asset, kappa=kappa).to(device)
     agent = PPOAgent(state_dim, action_dim,
                        mvo_solver_instance=mvo_solver,
                        spo_loss_instance=spo_loss_module,
                        lr_actor=lr_actor, lr_critic=lr_critic,
                        gamma=gamma, K_epochs=K_epochs, eps_clip=eps_clip,
                        action_std_init=action_std_init,
-                       spo_plus_loss_coeff=spo_plus_loss_coeff)
+                       spo_plus_loss_coeff=spo_plus_loss_coeff,
+                       kappa=kappa) # Pass kappa to PPOAgent
     agent.policy.to(device)
     agent.policy_old.to(device)
     print("Agent initialized.")
@@ -659,7 +661,7 @@ def main():
             current_covariance_matrix_tensor += 1e-6 * torch.eye(train_env.n_etfs, device=device)
             
             # --- Agent takes an action ---
-            action_portfolio_weights, predicted_returns_for_step = agent.select_action(state, current_covariance_matrix_tensor)
+            action_portfolio_weights, predicted_returns_for_step = agent.select_action(state, current_covariance_matrix_tensor, kappa=kappa) # Pass kappa
             next_state, reward, done, info = train_env.step(action_portfolio_weights)
             
             true_fwd_returns = info.get('true_forward_returns', np.zeros(action_dim, dtype=np.float32))
@@ -674,7 +676,7 @@ def main():
             
             # --- Update Agent ---
             if timestep_count % update_timestep_threshold == 0 and len(agent.buffer['states']) > 0:
-                update_metrics = agent.update(current_covariance_matrix_tensor) # Use the latest covariance matrix for the update
+                update_metrics = agent.update(current_covariance_matrix_tensor, kappa=kappa) # Pass kappa
                 if update_metrics:
                     current_agent_update_count += 1
                     spo_c = update_metrics['spo_components']
@@ -714,7 +716,7 @@ def main():
                     eval_covariance_matrix_tensor = torch.tensor(eval_cov_np, dtype=torch.float32).to(device)
                     eval_covariance_matrix_tensor += 1e-6 * torch.eye(train_env.n_etfs, device=device)
 
-                    eval_portfolio_weights, eval_predicted_returns = agent.select_action(eval_state, eval_covariance_matrix_tensor, is_eval=True)
+                    eval_portfolio_weights, eval_predicted_returns = agent.select_action(eval_state, eval_covariance_matrix_tensor, is_eval=True, kappa=kappa) # Pass kappa
                     append_to_csv('portfolio_weights_evolution',
                                   [episode, eval_ep_num, t_eval] + eval_portfolio_weights.tolist())
                     
@@ -786,7 +788,8 @@ def main():
                            lr_actor=lr_actor, lr_critic=lr_critic, # These LR are not used for eval
                            gamma=gamma, K_epochs=K_epochs, eps_clip=eps_clip,
                            action_std_init=action_std_init, # Not critical for eval
-                           spo_plus_loss_coeff=spo_plus_loss_coeff)
+                           spo_plus_loss_coeff=spo_plus_loss_coeff,
+                           kappa=kappa) # Pass kappa to PPOAgent
     try:
         backtest_agent.load_model(final_model_path)
         backtest_agent.policy.eval()        # Set policy to evaluation mode
@@ -826,9 +829,9 @@ def main():
                 positive_mean_action_tensor = torch.sigmoid(action_mean)
 
         if not hasattr(backtest_agent, 'mvo_solver') or backtest_agent.mvo_solver is None:
-             backtest_agent.mvo_solver = DifferentiableMVO(num_assets=backtest_env.n_etfs, max_weight_per_asset=mvo_max_weight_per_asset).to(device)
+             backtest_agent.mvo_solver = DifferentiableMVO(num_assets=backtest_env.n_etfs, max_weight_per_asset=mvo_max_weight_per_asset, kappa=kappa).to(device) # Pass kappa
 
-        backtest_action_weights_tensor = backtest_agent.mvo_solver(positive_mean_action_tensor, current_covariance_matrix_tensor_backtest)
+        backtest_action_weights_tensor = backtest_agent.mvo_solver(positive_mean_action_tensor, current_covariance_matrix_tensor_backtest, kappa=kappa) # Pass kappa
         backtest_action_weights_np = backtest_action_weights_tensor.cpu().numpy().flatten()
         agent_target_weights_history.append(backtest_action_weights_np) # Store agent's target ETF weights
         
@@ -1018,3 +1021,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
+# /c/Users/fwoit/Desktop/SMU/term3/ML/SPO-Portfolio-Optimizer/drl_spo_project/venv/Scripts/python.exe /c/Users/fwoit/Desktop/SMU/term3/ML/SPO-Portfolio-Optimizer/drl_spo_project/main.py
