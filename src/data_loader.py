@@ -4,7 +4,7 @@ import os
 import yfinance as yf
 from datetime import datetime, timedelta
 
-pd.set_option('future.no_silent_downcasting', True)
+pd.set_option('mode.chained_assignment', None)
 
 from sklearn.cluster import AffinityPropagation
 from sklearn.preprocessing import StandardScaler

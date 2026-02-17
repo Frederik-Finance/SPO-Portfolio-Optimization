@@ -25,8 +25,10 @@ def initialize_csv_loggers():
         'training_metrics': [
             'episode', 'timestep', 'reward', 'portfolio_value',
             'policy_loss', 'value_loss', 'total_spo_plus_loss',
-            'spo_max_term_val_mean', 'spo_term_2_r_hat_w_star_c_mean',
-            'spo_term_r_true_w_star_c_mean'
+            'episode', 'timestep', 'reward', 'portfolio_value',
+            'policy_loss', 'value_loss', 'total_spo_plus_loss',
+            'raw_spo_loss_mean', 'term_mu_s_w_star_mean',
+            'target_return_mean'
         ]
     }
     csv_loggers_paths = {name: os.path.join(log_output_dir, f"{name}.csv") for name in csv_files_headers}
@@ -569,7 +571,7 @@ def main():
     gamma = 0.99
     K_epochs = 80
     eps_clip = 0.2
-    action_std_init = 0.6
+    action_std_init = 0.0005 # Scaled down from 0.6 to match return scale
     
     spo_plus_loss_coeff = 0.1
     mvo_max_weight_per_asset = 0.25
@@ -634,9 +636,23 @@ def main():
     # ----- The initial static covariance matrix calculation has been removed -----
 
     # --- Agent Initialization ---
+    # --- Agent Initialization ---
     print("Initializing MVO solver, SPO+ loss module, and DRL agent...")
-    mvo_solver = DifferentiableMVO(num_assets=action_dim, max_weight_per_asset=mvo_max_weight_per_asset, kappa=kappa, debug=DEBUG).to(device)
-    spo_loss_module = SPOPlusLoss(num_assets=action_dim, mvo_max_weight_per_asset=mvo_max_weight_per_asset, kappa=kappa).to(device)
+    
+    # New MVO (Constraint-Side)
+    mvo_solver = DifferentiableMVO(
+        num_assets=action_dim, 
+        max_weight_per_asset=mvo_max_weight_per_asset, 
+        debug=DEBUG
+    ).to(device)
+    
+    # New SPO+ Loss (Constraint-Side)
+    spo_loss_module = SPOPlusLoss(
+        num_assets=action_dim, 
+        mvo_max_weight_per_asset=mvo_max_weight_per_asset,
+        scaling_factor=1000.0 # Scale up the loss
+    ).to(device)
+    
     agent = PPOAgent(state_dim, action_dim,
                        mvo_solver_instance=mvo_solver,
                        spo_loss_instance=spo_loss_module,
@@ -644,7 +660,7 @@ def main():
                        gamma=gamma, K_epochs=K_epochs, eps_clip=eps_clip,
                        action_std_init=action_std_init,
                        spo_plus_loss_coeff=spo_plus_loss_coeff,
-                       kappa=kappa) # Pass kappa to PPOAgent
+                       kappa=kappa) # Kappa might be unused in new MVO but kept for compatibility
     agent.policy.to(device)
     agent.policy_old.to(device)
     print("Agent initialized.")
@@ -654,7 +670,10 @@ def main():
     timestep_count = 0
     episode_rewards_history = []
     portfolio_value_history = []
-    current_agent_update_count = 0
+    
+    # Target Return for Constraints (e.g., 5bp daily ~ 12% annual)
+    # Ideally this should be dynamic or learned, but we fix it for now as per "Parametric Constraint" setup.
+    TARGET_RETURN_DAILY = 0.0005 
 
     for episode in range(1, max_episodes + 1):
         state = train_env.reset()
@@ -663,13 +682,20 @@ def main():
         for t in range(1, max_timesteps_per_episode + 1):
             timestep_count += 1
             
-            # --- Get Rolling Covariance at each timestep ---
+            # --- Get Rolling Covariance ---
             current_cov_np = train_env.get_rolling_covariance(cov_calc_lookback_window, min_cov_calculation_samples)
             current_covariance_matrix_tensor = torch.tensor(current_cov_np, dtype=torch.float32).to(device)
             current_covariance_matrix_tensor += 1e-6 * torch.eye(train_env.n_etfs, device=device)
             
             # --- Agent takes an action ---
-            action_portfolio_weights, predicted_returns_for_step = agent.select_action(state, current_covariance_matrix_tensor, kappa=kappa) # Pass kappa
+            # Pass target_return
+            action_portfolio_weights, predicted_returns_for_step = agent.select_action(
+                state, 
+                current_covariance_matrix_tensor, 
+                target_return=TARGET_RETURN_DAILY,
+                kappa=kappa
+            ) 
+            
             next_state, reward, done, info = train_env.step(action_portfolio_weights)
             
             true_fwd_returns = info.get('true_forward_returns', np.zeros(action_dim, dtype=np.float32))
@@ -690,8 +716,8 @@ def main():
                     append_to_csv('training_metrics', [
                         episode, t, reward, train_env.current_portfolio_value,
                         update_metrics['avg_policy_loss'], update_metrics['avg_value_loss'],
-                        update_metrics['total_spo_loss'], spo_c['spo_max_term_val_mean'],
-                        spo_c['spo_term_2_r_hat_w_star_c_mean'], spo_c['spo_term_r_true_w_star_c_mean']
+                        update_metrics['total_spo_loss'], spo_c['raw_spo_loss_mean'],
+                        spo_c['term_mu_s_w_star_mean'], spo_c['target_return_mean']
                     ])
             
             if done:

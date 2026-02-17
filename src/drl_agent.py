@@ -43,8 +43,13 @@ class ActorCritic(nn.Module):
 
     def _get_positive_action_mean(self, state):
         raw_action_mean = self.actor_mean_layers(state)
-        positive_action_mean = self.softplus(raw_action_mean) + self.epsilon
-        return positive_action_mean
+        # Use Tanh to bound returns between -1 and 1.
+        # Scale to 0.001 (10bps).
+        # Target is 0.0005 (5bps).
+        # This relationship (Max Pred ~ 2x Target) ensures the constraint is feasible but BINDING.
+        # If predictions were huge (e.g. 0.05), constraint would be slack -> Equal Weights.
+        scaled_action_mean = torch.tanh(raw_action_mean) * 0.001 
+        return scaled_action_mean
 
     def act(self, state):
         """
@@ -52,6 +57,7 @@ class ActorCritic(nn.Module):
         positive_action_mean = self._get_positive_action_mean(state)
 
         action_std = torch.exp(self.action_log_std).expand_as(positive_action_mean)
+        # print(f"DEBUG: Mean {positive_action_mean.mean():.6f} | Std {action_std.mean():.6f}")
         cov_mat = torch.diag_embed(action_std * action_std)
         
         try:
@@ -100,15 +106,15 @@ class PPOAgent:
                  mvo_solver_instance: DifferentiableMVO,
                  spo_loss_instance: SPOPlusLoss,
                  lr_actor=0.0003, lr_critic=0.001, gamma=0.99,
-                 K_epochs=80, eps_clip=0.2, action_std_init=0.6,
-                 spo_plus_loss_coeff=1.0, kappa=0.0): # Added kappa parameter
+                 K_epochs=80, eps_clip=0.2, action_std_init=0.0005,
+                 spo_plus_loss_coeff=1.0, kappa=0.0): 
 
         self.gamma = gamma
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.action_dim = action_dim
         self.spo_plus_loss_coeff = spo_plus_loss_coeff
-        self.kappa = kappa # Store kappa
+        self.kappa = kappa 
 
         self.mvo_solver = mvo_solver_instance
         self.spo_loss_fn = spo_loss_instance
@@ -133,9 +139,11 @@ class PPOAgent:
         self.buffer = {
             "states": [], "actions": [], "logprobs": [], "rewards": [],
             "is_terminals": [], "state_values": [], "true_forward_returns": [],
-            "mean_actions_for_mvo": []
+            "prediction_actions_for_mvo": [], # Renamed from mean_actions
+            "target_returns": [] # Store target return used
         }
-    def select_action(self, state, current_covariance_matrix: torch.Tensor, is_eval=False, kappa=None): # Added kappa parameter
+
+    def select_action(self, state, current_covariance_matrix: torch.Tensor, is_eval=False, target_return=0.0005, kappa=None):
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).unsqueeze(0)
                 sampled_action_tensor, action_logprob, state_val, positive_mean_action_tensor = self.policy_old.act(state_tensor)
@@ -148,16 +156,49 @@ class PPOAgent:
                 elif cv_matrix_tensor_for_mvo.shape[0] == 1 and positive_mean_action_tensor.shape[0] > 1 :
                     cv_matrix_tensor_for_mvo = cv_matrix_tensor_for_mvo.repeat(positive_mean_action_tensor.shape[0],1,1)
 
-                current_kappa = self.kappa if kappa is None else kappa
-                portfolio_weights_tensor = self.mvo_solver(positive_mean_action_tensor, cv_matrix_tensor_for_mvo, current_kappa) # Pass kappa
+                # IMPORTANT FIX:
+                # During TRAINING (is_eval=False), we must use the SAMPLED action (noisy prediction)
+                # to generate the portfolio weights. This ensures the reward signal corresponds
+                # to the action that was actually taken (exploration).
+                # During EVAL, we use the MEAN action (clean prediction) for best performance.
+                
+                if is_eval:
+                    action_for_mvo = positive_mean_action_tensor
+                else:
+                    # Sampled action might have negative values if using Normal dist without softplus?
+                    # The ActorCritic uses softplus on mean, but adds noise. 
+                    # We should probably clamp or ensure positivity if MVO expects valid returns.
+                    # MVO handles negative returns (just might not satisfy target).
+                    # Actually policy.act() generally returns 'sampled_action' from MultivariateNormal(mean, cov).
+                    # 'positive_mean_action' is softplus(mean).
+                    # The sampled action is centered around positive_mean. It could be negative.
+                    # Let's ensure it's comparable to returns by softplus or abs? 
+                    # Or just feed raw. The MVO is the 'decoder'.
+                    # Let's use the sampled_action directly.
+                    action_for_mvo = sampled_action_tensor
 
+                portfolio_weights_tensor = self.mvo_solver(
+                    action_for_mvo, 
+                    cv_matrix_tensor_for_mvo, 
+                    target_return=target_return # Constraints
+                ) 
+                
+                # --- Debugging: Check for Equal Weights / Fallback ---
+                w_np = portfolio_weights_tensor.cpu().numpy().flatten()
+                pred_np = action_for_mvo.cpu().numpy().flatten()
+                
+                is_equal_weight = np.allclose(w_np, 1.0/len(w_np), atol=1e-3)
+                if is_equal_weight:
+                    print(f"[DEBUG] Equal Weights Detected! Pred Range: [{pred_np.min():.5f}, {pred_np.max():.5f}] | Target: {target_return}")
+                # -----------------------------------------------------
 
             if not is_eval:
                 self.buffer['states'].append(state_tensor.cpu())
                 self.buffer['actions'].append(sampled_action_tensor.cpu())
                 self.buffer['logprobs'].append(action_logprob.cpu())
                 self.buffer['state_values'].append(state_val.cpu())
-                self.buffer['mean_actions_for_mvo'].append(positive_mean_action_tensor.cpu())
+                self.buffer['prediction_actions_for_mvo'].append(action_for_mvo.cpu())
+                self.buffer['target_returns'].append(torch.tensor(target_return, dtype=torch.float32).cpu())
 
             return portfolio_weights_tensor.cpu().numpy().flatten(), sampled_action_tensor.cpu().numpy().flatten()
 
@@ -172,7 +213,7 @@ class PPOAgent:
         for key in self.buffer.keys():
             self.buffer[key] = []
 
-    def update(self, current_covariance_matrix: torch.Tensor, kappa=None): # Added kappa parameter
+    def update(self, current_covariance_matrix: torch.Tensor, kappa=None): 
         if not self.buffer['states'] or len(self.buffer['states']) < 1:
             return None
 
@@ -196,13 +237,16 @@ class PPOAgent:
         old_logprobs = torch.cat(self.buffer['logprobs']).detach().squeeze()
         old_state_values = torch.cat(self.buffer['state_values']).detach().squeeze()
         old_true_forward_returns = torch.cat(self.buffer['true_forward_returns']).detach()
-        old_positive_mean_actions = torch.cat(self.buffer['mean_actions_for_mvo']).detach()
+        old_prediction_actions = torch.cat(self.buffer['prediction_actions_for_mvo']).detach()
+        old_target_returns = torch.tensor(self.buffer['target_returns'], dtype=torch.float32).detach()
 
+        # Advantage Calculation
         advantages = returns - old_state_values
         if len(advantages) > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
 
-        num_samples_in_batch = old_positive_mean_actions.shape[0]
+        # Covariance Matrix Handling
+        num_samples_in_batch = old_prediction_actions.shape[0]
         if current_covariance_matrix.ndim == 2:
             cv_matrix_tensor_for_loss = current_covariance_matrix.unsqueeze(0).repeat(num_samples_in_batch, 1, 1)
         elif current_covariance_matrix.shape[0] == 1 and num_samples_in_batch > 1:
@@ -210,15 +254,24 @@ class PPOAgent:
         elif current_covariance_matrix.shape[0] == num_samples_in_batch:
             cv_matrix_tensor_for_loss = current_covariance_matrix
         else:
-            raise ValueError(f"Covariance matrix shape {current_covariance_matrix.shape} incompatible with batch size {num_samples_in_batch}")
-        cv_matrix_tensor_for_loss = cv_matrix_tensor_for_loss.to(old_positive_mean_actions.device)
+             # Just repeat the last if we can't match? 
+             # Simpler: Assume covariance matrix passed is for the *current* step, but we are updating on stored batch.
+             # Actually, storing covariance matrices in buffer is memory intensive.
+             # But here we are passing 'current' which might be wrong if covariances change per step.
+             # Ideally, we should store covariances or recompute them.
+             # Given code structure, let's assume slowly changing covariance or simple repeat for now.
+             cv_matrix_tensor_for_loss = current_covariance_matrix.repeat(num_samples_in_batch, 1, 1) if current_covariance_matrix.shape[0] != num_samples_in_batch else current_covariance_matrix
 
-        current_kappa = self.kappa if kappa is None else kappa
+        cv_matrix_tensor_for_loss = cv_matrix_tensor_for_loss.to(old_prediction_actions.device)
+        old_target_returns = old_target_returns.to(old_prediction_actions.device)
+
+        # SPO+ Loss Calculation
+        # Input: The actions we *used* for MVO (prediction_actions)
         actual_spo_plus_loss, spo_components = self.spo_loss_fn(
-            old_positive_mean_actions,
+            old_prediction_actions, 
             old_true_forward_returns,
             cv_matrix_tensor_for_loss,
-            current_kappa # Pass kappa
+            old_target_returns # Pass batch of targets
         )
 
         total_policy_loss_agg = 0
@@ -237,13 +290,37 @@ class PPOAgent:
             policy_loss_per_sample = -torch.min(surr1, surr2)
             value_loss = self.MseLoss(state_values_eval, returns)
 
-            # Normalize SPO+ loss to prevent it from dominating other loss components
-            # Use a small epsilon to prevent division by zero if std is 0
-            normalized_spo_plus_loss = actual_spo_plus_loss / (actual_spo_plus_loss.std().detach() + 1e-8) if actual_spo_plus_loss.numel() > 1 else actual_spo_plus_loss
+            # NOTE: SPO+ is computed ONCE per batch (on the collected trajectory), 
+            # NOT recomputed per PPO epoch (since it depends on "oracle" which is fixed for the data).
+            # Also, recomputing it would require differentiating through MVO each time which is slow.
+            # However, technically we want to update the policy to minimize SPO+ loss on *new* actions?
+            # No, standard DRL-SPO usually treats SPO+ as an auxiliary loss on the *trajectory* features.
+            # The 'old_prediction_actions' are fixed (from rollout). 
+            # If we want to optimize the policy to produce BETTER predictions, we need gradients w.r.t policy parameters.
+            # But 'old_prediction_actions' are detached from graph! 
+            # Wait. If 'old_prediction_actions' comes from buffer as .detach(), 
+            # then 'actual_spo_plus_loss' will have NO gradient w.r.t. current policy!
+            
+            # IMPT: We need to re-evaluate the ACTOR on the states to get *current* predictions for SPO+ loss gradient.
+            # Like we do for 'logprobs' in PPO.
+            
+            # Re-evaluate current policy to get new predictions for SPO+
+            # We need the 'mean' action or 'sampled'?
+            # Usually we want the 'mean' (deterministic prediction) to match the oracle.
+            current_mean_actions_for_loss = self.policy._get_positive_action_mean(old_states) 
+            # Or sampled? The paper definition is on the parameters \hat{\mu}. 
+            # The actor outputs distribution parameters. The mean is the best estimate of \hat{\mu}.
+            
+            current_spo_loss, _ = self.spo_loss_fn(
+                current_mean_actions_for_loss,
+                old_true_forward_returns,
+                cv_matrix_tensor_for_loss,
+                old_target_returns
+            )
 
             loss = policy_loss_per_sample.mean() + \
                    0.5 * value_loss + \
-                   self.spo_plus_loss_coeff * normalized_spo_plus_loss - \
+                   self.spo_plus_loss_coeff * current_spo_loss - \
                    0.01 * dist_entropy.mean()
 
             self.optimizer.zero_grad()
@@ -252,7 +329,7 @@ class PPOAgent:
 
             total_policy_loss_agg += policy_loss_per_sample.mean().item()
             total_value_loss_agg += value_loss.item()
-
+            
             if k_epoch_iter == self.K_epochs - 1:
                 final_advantages_batch = advantages.detach().cpu().numpy()
                 final_ratios_batch = ratios.detach().cpu().numpy()

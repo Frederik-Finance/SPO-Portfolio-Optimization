@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
+
 try:
     from .spo_layer import DifferentiableMVO
 except ImportError:
@@ -8,124 +9,135 @@ except ImportError:
 
 
 class SPOPlusLoss(nn.Module):
-    def __init__(self, num_assets, mvo_weight_bounds=(0,1), mvo_risk_aversion=None, mvo_target_return=None, mvo_max_weight_per_asset=1.0, kappa=0.0):
+    def __init__(self, num_assets, mvo_max_weight_per_asset=1.0, kappa=0.0, scaling_factor=1000.0):
         """
+        SPO+ Loss for Constraint-Side Uncertainty.
+        
+        Ref: "Local Consistency of SPO+ Loss"
+        Loss L = 1 - mu_stress^T y*(mu)  (Normalized form in paper)
+        
+        In our case:
+        Target Constraint: mu^T w >= r_tgt
+        Regret = Maximizing Constraint Satisfaction? No, minimizing violation.
+        
+        Paper Formulation:
+        L_{SPO+}(\hat{\mu}, \mu) = \mu_s^T y^*(\mu_s) - \mu_s^T y^*(\mu)
+        
+        where y*(v) solves: min 1/2 ||y||^2 s.t. v^T y >= r_tgt
+        
+        For feasible v, v^T y*(v) = r_tgt (binding constraint).
+        So L = r_tgt - \mu_s^T y^*(\mu)
+        
+        Args:
+            scaling_factor: Multiplier to scale the loss to be comparable with PPO loss.
+                            Since returns are ~1e-3, loss is ~1e-4. PPO is ~1. 
+                            Factor of 1000-10000 is appropriate.
         """
         super(SPOPlusLoss, self).__init__()
         self.num_assets = num_assets
-        self.kappa = kappa
+        self.scaling_factor = scaling_factor
         
-        self.mvo_solver = DifferentiableMVO(
+        # Oracle Solver (uses True parameters)
+        # We assume the oracle also solves the MinVariance problem with True returns.
+        self.oracle_solver = DifferentiableMVO(
             num_assets=num_assets, 
-            max_weight_per_asset=mvo_max_weight_per_asset,
-            kappa=kappa
+            max_weight_per_asset=mvo_max_weight_per_asset
         )
 
-    def forward(self, predicted_returns_c_hat, true_returns_c, covariance_matrix, kappa=None):
+    def forward(self, predicted_returns_hat, true_returns, covariance_matrix, target_return, kappa=None):
         """
-        """
-        if predicted_returns_c_hat.ndim == 1:
-            predicted_returns_c_hat = predicted_returns_c_hat.unsqueeze(0)
-        if true_returns_c.ndim == 1:
-            true_returns_c = true_returns_c.unsqueeze(0)
+        Compute SPO+ Loss.
         
-        batch_size_pred = predicted_returns_c_hat.shape[0]
-        if covariance_matrix.ndim == 2: 
-            covariance_matrix = covariance_matrix.unsqueeze(0).repeat(batch_size_pred, 1, 1)
-        elif covariance_matrix.shape[0] == 1 and batch_size_pred > 1:
-            covariance_matrix = covariance_matrix.repeat(batch_size_pred, 1, 1)
-        elif covariance_matrix.shape[0] != batch_size_pred:
-            raise ValueError(f"Covariance matrix batch size {covariance_matrix.shape[0]} "
-                             f"does not match predicted returns batch size {batch_size_pred} and cannot be broadcast.")
-
-        current_kappa = self.kappa if kappa is None else kappa
-
+        mu_s = 2 * mu_hat - mu
+        w*(mu) = Optimal weights using TRUE returns (Oracle)
+        
+        Loss = r_tgt - mu_s^T w*(mu)
+        
+        Note: If mu_s^T w*(mu) > r_tgt, loss is negative?
+        SPO+ loss is usually non-negative. 
+        In the paper, L = 1 - mu_s^T y*. 
+        The paper assumes min-norm, where dual variables are positive.
+        Essentially we want to maximize mu_s^T w*(mu) to satisfy the constraint for mu_s.
+        If we minimize (r_tgt - val), we push val up.
+        """
+        # Dimensions
+        if predicted_returns_hat.ndim == 1:
+            predicted_returns_hat = predicted_returns_hat.unsqueeze(0)
+        if true_returns.ndim == 1:
+            true_returns = true_returns.unsqueeze(0)
+        
+        batch_size = predicted_returns_hat.shape[0]
+        device = predicted_returns_hat.device
+        
+        # Scalar handling for target_return
+        if not isinstance(target_return, torch.Tensor):
+            target_return = torch.full((batch_size,), float(target_return), device=device)
+        elif target_return.ndim == 0:
+            target_return = target_return.repeat(batch_size)
+            
+        # 1. Oracle Solution w*(mu)
+        # Minimize Variance s.t. mu^T w >= r_tgt
+        # We generally assume true_returns allows feasibility.
         with torch.no_grad(): 
-            w_star_c = self.mvo_solver(true_returns_c, covariance_matrix, current_kappa).detach()
+            w_star_mu = self.oracle_solver(true_returns, covariance_matrix, target_return).detach()
 
-        r_hat = predicted_returns_c_hat
-        r_true = true_returns_c
-
-        effective_mu_for_max_term = -r_true + 2 * r_hat
-        w_for_max_term = self.mvo_solver(effective_mu_for_max_term, covariance_matrix, current_kappa)
-        max_term_val = torch.sum(effective_mu_for_max_term * w_for_max_term, dim=1)
-
-        term_2_r_hat_w_star_c = -2 * torch.sum(r_hat * w_star_c, dim=1)
+        # 2. Stress Parameter
+        # mu_s = 2 * mu_hat - mu
+        mu_s = 2 * predicted_returns_hat - true_returns
         
-        term_r_true_w_star_c_contribution = torch.sum(r_true * w_star_c, dim=1)
+        # 3. SPO+ Loss Calculation
+        # L = Constraints(mu_s on w*(mu))
+        # We want mu_s^T w*(mu) >= r_tgt.
+        # Loss = ReLU(r_tgt - mu_s^T w*(mu)) ?
+        # The paper form '1 - ...' implies linear penalty, allowing negative values if ... > 1.
+        # However, for minimization tasks, 'Regret' is usually positive.
+        # In the paper, L >= Regret >= 0.
+        # Let's use the direct linear form from paper: L = r_tgt - mu_s^T w*(mu)
+        # Wait, if we minimize this, we push mu_s^T w* to +infinity.
+        # The paper's problem is P(v): min ||y||^2 s.t. v^T y = 1.
+        # The minimizer y*(v) has length proportional to 1/||v||.
+        # If we just maximize mu_s^T w*, and w* is fixed, mu_hat grows indefinitely.
+        # BUT w* is fixed. mu_hat is network output.
+        # Network output usually bounded or regularized.
+        # Also, mu_hat determines the action in the PPO step (w_hat).
+        # This Loss is an AUXILIARY loss to shape the features.
         
-        spo_plus_loss_per_item = max_term_val + term_2_r_hat_w_star_c + term_r_true_w_star_c_contribution
+        # Let's stick to the paper's literal definition:
+        # L = 1 - \mu_s^T y^*(\mu)
+        # Here: L = target_return - \mu_s^T w^*(\mu)
         
-        final_loss = spo_plus_loss_per_item.mean()
+        # Calculate Term: mu_s^T w*(mu)
+        term_mu_s_w_star = torch.sum(mu_s * w_star_mu, dim=1)
+        
+        # Loss
+        raw_loss = target_return - term_mu_s_w_star
+        
+        # Scaling
+        scaled_loss = raw_loss * self.scaling_factor
+        
+        final_loss = scaled_loss.mean()
 
         spo_component_means = {
-           'spo_max_term_val_mean': max_term_val.mean().item(),
-           'spo_term_2_r_hat_w_star_c_mean': term_2_r_hat_w_star_c.mean().item(),
-           'spo_term_r_true_w_star_c_mean': term_r_true_w_star_c_contribution.mean().item()
+           'raw_spo_loss_mean': raw_loss.mean().item(),
+           'term_mu_s_w_star_mean': term_mu_s_w_star.mean().item(),
+           'target_return_mean': target_return.mean().item()
         }
 
         return final_loss, spo_component_means
 
 if __name__ == '__main__':
-    print("SPO+ Loss (spo_loss.py) - Testing with Functional MVO Layer and Component Return")
+    print("Testing SPO+ Loss (Constraint-Side)...")
+    loss_mod = SPOPlusLoss(num_assets=3)
     
-    num_assets_example = 3 
-    batch_s = 2
-
-    mvo_max_weight = 0.6
-    try:
-        spo_loss_fn = SPOPlusLoss(num_assets=num_assets_example, mvo_max_weight_per_asset=mvo_max_weight)
-        print(f"SPOPlusLoss instantiated successfully with MVO max_weight_per_asset={mvo_max_weight}.")
-    except Exception as e:
-        print(f"Error instantiating SPOPlusLoss: {e}")
-        import traceback
-        traceback.print_exc()
-        exit()
-
-    dummy_predicted_returns = torch.rand(batch_s, num_assets_example, requires_grad=True) + 0.01 
-    dummy_true_returns = torch.rand(batch_s, num_assets_example) + 0.005
-
-    dummy_cov_list = []
-    for _ in range(batch_s):
-        rand_m = torch.rand(num_assets_example, num_assets_example)
-        cov_m = torch.matmul(rand_m, rand_m.transpose(0,1)) / num_assets_example 
-        cov_m = cov_m + 1e-3 * torch.eye(num_assets_example)
-        dummy_cov_list.append(cov_m.unsqueeze(0))
-    dummy_covariance_matrices_batched = torch.cat(dummy_cov_list, dim=0)
-
-    print(f"\nDummy predicted_returns_c_hat:\n{dummy_predicted_returns}")
-    print(f"Dummy true_returns_c:\n{dummy_true_returns}")
-
-    spo_loss_value, components = None, None
-
-    print("\n--- Testing SPOPlusLoss Forward Pass ---")
-    try:
-        spo_loss_value, components = spo_loss_fn(dummy_predicted_returns, dummy_true_returns, dummy_covariance_matrices_batched)
-        print(f"\nCalculated SPO+ Loss value: {spo_loss_value.item()}")
-        print(f"Returned SPO+ Loss Components (means): {components}")
-
-        assert spo_loss_value.ndim == 0, "SPO+ Loss should be a scalar tensor."
-        assert isinstance(components, dict), "Components should be a dictionary."
-        assert 'spo_max_term_val_mean' in components, "A key component is missing in the returned dictionary."
-
-        print("\n--- Testing SPOPlusLoss Backward Pass ---")
-        if dummy_predicted_returns.grad is not None:
-            dummy_predicted_returns.grad.zero_()
-        spo_loss_value.backward()
-        print("Backward pass successful.")
-
-        if dummy_predicted_returns.grad is not None:
-            print(f"Gradients for predicted_returns_c_hat (first sample):\n{dummy_predicted_returns.grad[0]}")
-            if torch.all(torch.abs(dummy_predicted_returns.grad) < 1e-10):
-                print("Warning: Gradients are all zero or very close to zero. This might indicate an issue.")
-            else:
-                print("Gradients have flowed and are non-zero (checked first sample).")
-        else:
-            print("Error: No gradients computed for predicted_returns_c_hat after backward pass.")
-
-    except Exception as e:
-        print(f"!!! Error during SPOPlusLoss forward or backward pass: {e}")
-        import traceback
-        traceback.print_exc()
-        
-    print("\n--- SPO+ Loss Test Finished ---")
+    # Fake data
+    p_ret = torch.tensor([[0.02, 0.02, 0.02]], requires_grad=True)
+    t_ret = torch.tensor([[0.01, 0.03, 0.01]])
+    cov = torch.eye(3).unsqueeze(0)
+    tgt = 0.015
+    
+    l, comps = loss_mod(p_ret, t_ret, cov, tgt)
+    print("Loss:", l.item())
+    print("Comps:", comps)
+    
+    l.backward()
+    print("Grad:", p_ret.grad)
